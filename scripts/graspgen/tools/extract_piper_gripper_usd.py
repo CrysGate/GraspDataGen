@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 from typing import Iterable
 
-from pxr import Gf, Sdf, Usd, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 
 DEFAULT_SOURCE = "piper_isaac_sim/USD/piper_v2.usd"
@@ -336,6 +336,64 @@ def remove_api_schema(prim: Usd.Prim, schema_name: str) -> None:
     prim.SetMetadata("apiSchemas", Sdf.TokenListOp.CreateExplicit(explicit_items))
 
 
+def set_common_xform_from_matrix(prim: Usd.Prim, matrix: Gf.Matrix4d) -> None:
+    """Author a simple translate/orient/scale xform from a composed matrix."""
+
+    transform = Gf.Transform(matrix)
+    quat = transform.GetRotation().GetQuat()
+    imag = quat.GetImaginary()
+
+    xformable = UsdGeom.Xformable(prim)
+    xformable.ClearXformOpOrder()
+    xformable.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(transform.GetTranslation()))
+    xformable.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(quat.GetReal(), Gf.Vec3d(imag)))
+    xformable.AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(transform.GetScale()))
+
+
+def rebase_articulation_to_base_frame(
+    stage: Usd.Stage,
+    root_path: str,
+    base_link: str,
+    link_names: list[str],
+) -> list[str]:
+    """Make the output root/base frame coincide, matching the bundled gripper USDs.
+
+    Piper source files keep link6 at its original full-arm world pose. The
+    official GraspDataGen grippers instead place the default prim and the
+    configured base frame at identity, then express all child bodies relative
+    to that frame.
+    """
+
+    root = stage.GetPrimAtPath(root_path)
+    base = stage.GetPrimAtPath(f"{root_path}/{base_link}")
+    if not root or not base:
+        return [f"WARNING: could not rebase: missing root or base prim ({root_path}, {base_link})"]
+
+    cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    base_world = cache.GetLocalToWorldTransform(base)
+    base_world_inv = base_world.GetInverse()
+
+    rebased: list[str] = []
+    link_matrices: dict[str, Gf.Matrix4d] = {}
+    for link_name in link_names:
+        link = stage.GetPrimAtPath(f"{root_path}/{link_name}")
+        if not link:
+            continue
+        link_matrices[link_name] = cache.GetLocalToWorldTransform(link) * base_world_inv
+
+    set_common_xform_from_matrix(root, Gf.Matrix4d(1.0))
+    for link_name, matrix in link_matrices.items():
+        link = stage.GetPrimAtPath(f"{root_path}/{link_name}")
+        set_common_xform_from_matrix(link, matrix)
+        translation = Gf.Transform(matrix).GetTranslation()
+        rebased.append(f"{link_name}=({translation[0]:.6g}, {translation[1]:.6g}, {translation[2]:.6g})")
+
+    return [
+        "Rebased gripper so the default prim and base frame are identity, matching franka_panda/onrobot_rg6.",
+        f"Rebased link translations relative to {base_link}: " + ", ".join(rebased),
+    ]
+
+
 def quat_times(a: Gf.Quatf, b: Gf.Quatf) -> Gf.Quatf:
     return a * b
 
@@ -459,6 +517,11 @@ def apply_collision_api_to_mesh_parents(stage: Usd.Stage, collision_root_path: s
     if not root:
         return [f"Collision root missing: {collision_root_path}"]
 
+    UsdPhysics.CollisionAPI.Apply(root)
+    UsdPhysics.MeshCollisionAPI.Apply(root)
+    root.GetAttribute("physics:collisionEnabled").Set(True)
+    set_token_attr(root, "physics:approximation", "convexDecomposition")
+
     for mesh in list(iter_mesh_prims(stage, collision_root_path)):
         parent = mesh.GetParent()
         if not parent or parent == root:
@@ -467,7 +530,7 @@ def apply_collision_api_to_mesh_parents(stage: Usd.Stage, collision_root_path: s
         UsdPhysics.CollisionAPI.Apply(parent)
         UsdPhysics.MeshCollisionAPI.Apply(parent)
         parent.GetAttribute("physics:collisionEnabled").Set(True)
-        set_token_attr(parent, "physics:approximation", "convexHull")
+        set_token_attr(parent, "physics:approximation", "convexDecomposition")
 
         counts = mesh.GetAttribute("faceVertexCounts").Get()
         if counts is not None and not all(count == 3 for count in counts):
@@ -566,9 +629,11 @@ def extract_gripper(
                 stage.RemovePrim(child.GetPath())
                 notes.append(f"Removed non-gripper joint: {child.GetPath()}")
 
-    # Repoint articulation metadata and joint targets to the extracted gripper.
-    set_relationship_targets(root, "isaac:physics:robotLinks", [f"{root_path}/{base_link}", *[f"{root_path}/{name}" for name in finger_links]])
-    set_relationship_targets(root, "isaac:physics:robotJoints", [f"{root_path}/root_joint", *[f"{root_path}/joints/{name}" for name in finger_joints]])
+    # Match the bundled gripper USDs: articulation discovery is rooted on the
+    # fixed root_joint with PhysicsArticulationRootAPI, without extra Isaac
+    # robotLinks/robotJoints relationships on the model root.
+    remove_property_if_present(root, "isaac:physics:robotLinks")
+    remove_property_if_present(root, "isaac:physics:robotJoints")
 
     root_joint = stage.GetPrimAtPath(f"{root_path}/root_joint")
     if root_joint:
@@ -581,6 +646,8 @@ def extract_gripper(
         if joint:
             set_relationship_targets(joint, "physics:body0", [f"{root_path}/{base_link}"])
             set_relationship_targets(joint, "physics:body1", [f"{root_path}/{finger_link}"])
+
+    notes.extend(rebase_articulation_to_base_frame(stage, root_path, base_link, [base_link, *finger_links]))
 
     for link_name in [base_link, *finger_links]:
         use_visual_as_collision = link_name == base_link and base_collision_source == "visuals"
