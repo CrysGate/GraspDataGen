@@ -37,7 +37,7 @@ import usd_tools
 from graspgen_utils import open_configuration_string_to_dict
 
 class GripperCreator:
-    def __init__(self, config, wait_for_debugger_attach=False):        
+    def __init__(self, config, wait_for_debugger_attach=False):
         # Set number of environments to match number of grasps, but not exceed num_envs
         self.config = config
         self.wait_for_debugger_attach = wait_for_debugger_attach
@@ -65,10 +65,10 @@ class GripperCreator:
         from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
         from isaaclab.utils import configclass
         from isaaclab.actuators import ImplicitActuatorCfg
-        
+
         @configclass
         class GripperCreatorSceneCfg(InteractiveSceneCfg):
-            """Configuration for a grasping scene."""    
+            """Configuration for a grasping scene."""
             # lights
             dome_light = AssetBaseCfg(
                 prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
@@ -212,12 +212,12 @@ class GripperCreator:
             delta = upper_delta
             tool_pos = 0.5*wp.vec3f(gripper.data.body_com_pos_w[0, finger_idxs[1]] + gripper.data.body_com_pos_w[0, finger_idxs[0]])
         # delta is now finger1 - finger0 position in the open limit.  The largest delta is the open_axis.
-        open_axis = wp.argmax(wp.abs(delta))
+        open_axis = int(wp.argmax(wp.abs(delta)))
         if delta[open_axis] < 0.0:
             finger_idxs = finger_idxs[::-1]
         approach_delta = tool_pos - wp.vec3f(gripper.data.body_com_pos_w[0, gripper.body_names.index(self.config.base_frame)])
         approach_delta[open_axis] = 0.0
-        approach_axis = wp.argmax(wp.abs(approach_delta))
+        approach_axis = int(wp.argmax(wp.abs(approach_delta)))
         mid_axis = 3 - approach_axis - open_axis
         # MTC TODO if the approach axis delta is negative, then we use negaive normals when moving away form the object?
         return open_limit, approach_axis, open_axis, mid_axis, finger_idxs
@@ -232,7 +232,7 @@ class GripperCreator:
         import isaaclab.sim as sim_utils
         from isaaclab.sim import build_simulation_context
         from isaaclab.scene import InteractiveScene
-        
+
         # Initialize the simulation context
         dt = 0.1 * DEFAULT_CONVERGENCE_ITERATIONS / max(DEFAULT_CONVERGENCE_ITERATIONS, convergence_iterations)
         sim_cfg = sim_utils.SimulationCfg(
@@ -243,13 +243,13 @@ class GripperCreator:
         with build_simulation_context(device=self.config.device, gravity_enabled = False, auto_add_lighting=True, sim_cfg=sim_cfg) as sim:
             sim._app_control_on_stop_handle = None
 
-            #self.sim = sim_utils.SimulationContext(sim_cfg) 
+            #self.sim = sim_utils.SimulationContext(sim_cfg)
             # Set main camera
             sim.set_camera_view(eye=(1.7889285412085776, 2.4058293979259333, 2.254122255934516), target=(0.0, 0.0, 0.0))
-            
+
             # Create scene
             # need an environment for the min, max, and open configuration... and as many pinch widths as requested.
-            
+
             self.num_envs = 0 if len(self.config.open_configuration) == 0 else 1
             self.num_envs += max(2, self.config.pinch_width_resolution)
             scene_cfg = self.build_scene_cfg()
@@ -263,7 +263,7 @@ class GripperCreator:
             sim.reset()
 
             sim_dt = sim.get_physics_dt()
-            
+
             # Get scene entities
             gripper = self.scene["gripper"]
             #self.save_scene_full(f'sim_reset', gripper)
@@ -275,7 +275,7 @@ class GripperCreator:
             gripper.write_root_pose_to_sim(gripper_state[:, :7])
             gripper.write_root_velocity_to_sim(gripper_state[:, 7:])
             #self.save_scene_full(f'write_root', gripper)
-            
+
             # Apply motion to gripper
             # joint state
             # Create linearly interpolated joint positions between lower and upper limits
@@ -294,13 +294,13 @@ class GripperCreator:
                 # Filter driven joint names using the mask
                 if non_zero_mask[j_idx]:
                     driven_joints[j_idx] = name
-        
+
             for j in range(lower_limits.shape[1]):
                 if j not in driven_joints:
                     for i in range(lower_limits.shape[0]):
                         lower_limits[i, j] = 0.0
                         upper_limits[i, j] = 0.0
-            
+
             # Create interpolation weights from 0 to 1, but add an extra at the end for the open configuration
             num_weights = self.num_envs if len(self.config.open_configuration) == 0 else self.num_envs - 1
             weights = torch.linspace(0, 1, num_weights, device=lower_limits.device)
@@ -338,7 +338,7 @@ class GripperCreator:
                     sorted_indices = torch.argsort(joint_pos[:, joint_idx])
                     open_configuration_offset = torch.where(sorted_indices == (self.num_envs - 1))[0][0].item()
                     joint_pos = joint_pos[sorted_indices]
-            
+
             joint_vel = gripper.data.default_joint_vel.clone()
             gripper.write_joint_state_to_sim(joint_pos, joint_vel)
             #self.save_scene_full(f'write_joint_state', gripper)
@@ -347,7 +347,7 @@ class GripperCreator:
             #self.save_scene_full(f'scene_reset', gripper)
 
             # gripper should always be matching the joint positions
-            joint_pos_target = joint_pos 
+            joint_pos_target = joint_pos
 
             # Set joint position target
             gripper.set_joint_position_target(joint_pos_target)
@@ -366,12 +366,12 @@ class GripperCreator:
                 sim_time += sim_dt
                 if measure_convergence:
                     new_pos = gripper.data.body_com_pos_w.clone()
-                
+
                     delta = new_pos - old_pos
                     # Calculate the magnitude of the difference for each env/body
                     delta_magnitude = torch.norm(delta, dim=-1)  # Shape: [num_envs, num_bodies]
                     max_diff = torch.max(delta_magnitude)
-                    
+
                     print(f"Step {i}: Max position difference: {max_diff.item():.8f} {max_diff.item()}")
                     old_pos = new_pos
             self.scene.write_data_to_sim()
@@ -434,7 +434,7 @@ class GripperCreator:
             bite_point = self.get_bite_point(gripper_bodies[finger_indices[0]]["collision_mesh"], approach_axis, open_axis, mid_axis)
             gripper_data_out["bite_point"] = bite_point
             wp.launch(kernel=add_constant_kernel,
-                    dim=len(gripper_bodies[finger_indices[0]]["collision_mesh"]["vertices"]), 
+                    dim=len(gripper_bodies[finger_indices[0]]["collision_mesh"]["vertices"]),
                     inputs=[gripper_bodies[finger_indices[0]]["collision_mesh"]["vertices"], -bite_point],
                     device=self.config.device)
             wp.launch(kernel=add_2d_translation_kernel,
@@ -487,7 +487,7 @@ def create_gripper_with_lab(gripper_config, save_gripper=True, measure_convergen
     # Check if user specified CPU device
     if gripper_config.device == "cpu":
         print_red("Warning: --device cpu is not expected to work with this script. If you want to run other components with CPU, please run create_gripper_lab.py standalone for your gripper first using cuda so the gripper.npz file is created.")
-        
+
     gripper_creator = GripperCreator(gripper_config, wait_for_debugger_attach=wait_for_debugger_attach)
     gripper = gripper_creator.create_gripper(save_gripper, measure_convergence, convergence_iterations)
     return gripper
@@ -497,13 +497,13 @@ if __name__ == "__main__":
     add_create_gripper_args(parser, globals(), **collect_create_gripper_args(globals()))
     add_gripper_args(parser, globals(), **collect_gripper_args(globals()))
     args_cli = parser.parse_args()
-    
+
     # Apply gripper configuration if specified
     apply_gripper_configuration(args_cli)
-    
+
     # Initialize simulation_app when needed
     simulation_app = start_isaac_lab_if_needed(file_name=__file__, headless= False if args_cli.force_headed else args_cli.headless, wait_for_debugger_attach=getattr(args_cli, 'wait_for_debugger_attach', False))
-    
+
     gripper_file=args_cli.gripper_file
     finger_colliders=args_cli.finger_colliders
     base_frame=args_cli.base_frame

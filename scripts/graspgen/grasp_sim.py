@@ -24,7 +24,7 @@ import os
 USE_ORIGIN_PLACEMENT = False
 
 default_grasp_file = os.path.join(os.environ.get('GRASP_DATASET_DIR', ''), "grasp_guess_data/onrobot_rg6/mug.yaml")
- 
+
 default_max_num_envs = 1024
 default_max_num_grasps = 0
 default_env_spacing = 1.0
@@ -72,7 +72,7 @@ def collect_grasp_sim_args(input_dict):
             kwargs[key] = globals()[key]
     return kwargs
 
-def add_grasp_sim_args(parser, param_dict, default_grasp_file=default_grasp_file, 
+def add_grasp_sim_args(parser, param_dict, default_grasp_file=default_grasp_file,
                        default_max_num_envs=default_max_num_envs,
                        default_max_num_grasps=default_max_num_grasps,
                        default_env_spacing=default_env_spacing,
@@ -84,21 +84,21 @@ def add_grasp_sim_args(parser, param_dict, default_grasp_file=default_grasp_file
                        default_open_limit=default_open_limit,
                        default_grasp_file_cspace_position=default_grasp_file_cspace_position,
                        default_disable_sim=default_disable_sim,
-                       
-                       
+
+
                        default_record_pvd=default_record_pvd,
                        default_debug_single_index=default_debug_single_index,
                        default_output_failed_grasp_locations=default_output_failed_grasp_locations,
                        default_flip_input_grasps=default_flip_input_grasps,
                        default_enable_ccd=default_enable_ccd):
-    
+
     # Register argument groups since we'll be adding arguments to them
     from graspgen_utils import register_argument_group
     register_argument_group(parser, 'grasp_sim', 'grasp_sim', 'Grasp simulation options')
-    
+
     add_gripper_args(parser, param_dict, **collect_gripper_args(param_dict))
     add_object_args(parser, param_dict, **collect_object_args(param_dict))
-    
+
     # The grasp validation sim can take an input isaac grasp file, or a grasp guess buffer.
     # This allows us to run this stand alone or with user supplied grasps.
     # TODO: If the grasp file has only grasps and the gripper file, then get the gripper parameters, like open_limit, from the gripper file.
@@ -125,13 +125,13 @@ def add_grasp_sim_args(parser, param_dict, default_grasp_file=default_grasp_file
     # Fallback cspace for grasp files that lack cspace_position / pregrasp_cspace_position
     add_arg_to_group('grasp_sim', parser, "--grasp_file_cspace_position", type=str, default=default_grasp_file_cspace_position,
                      help="JSON mapping joint name (str) -> position (float) to use when grasp file lacks cspace.")
-    
+
     # debugging args
     add_arg_to_group('grasp_sim', parser, "--disable_sim", action="store_true", default=default_disable_sim,
         help="Disable simulation")
     add_arg_to_group('grasp_sim', parser, "--record_pvd", action="store_true", default=default_record_pvd,
         help="Record PVD files for debugging")
-    # If we want to debug by looking at a single index from a file, then set this to the index... a value of 0 does nothing... 
+    # If we want to debug by looking at a single index from a file, then set this to the index... a value of 0 does nothing...
     # if you want the first index in a file then set max_num_envs to 1 and this to 0, and use --force_headed so you can see the single grasp
     # before the simulation closes.  Tricky, I know, but it's for debugging, not normal use.
     add_arg_to_group('grasp_sim', parser, "--debug_single_index", type=int, default=default_debug_single_index,
@@ -155,7 +155,7 @@ import copy
 import warp as wp
 import json
 from warp_kernels import (
-    world_to_object_force_kernel, get_joint_pos_kernel, compute_relative_pos_and_rot_kernel, 
+    world_to_object_force_kernel, get_joint_pos_kernel, compute_relative_pos_and_rot_kernel,
     get_joint_pos_kernel, set_is_success_kernel, get_body_pos_kernel, transform_inverse_kernel, get_cspace_positions_kernel, get_bite_points_kernel
 )
 import time
@@ -163,10 +163,10 @@ from datetime import datetime
 
 def parse_tug_sequences(sequences):
     """Parse tug sequences from command line argument.
-    
+
     Args:
         sequence_str: JSON string in format [[duration, [x,y,z], force_scale], ...]
-        
+
     Returns:
         List of [duration, [x,y,z], force_scale] sequences
     """
@@ -176,37 +176,37 @@ def parse_tug_sequences(sequences):
         # First validate the JSON structure
         if not isinstance(sequences, list):
             raise ValueError("Input must be a list of sequences")
-        
+
         # Validate and normalize each sequence
         normalized_sequences = []
         for i, seq in enumerate(sequences):
             if not isinstance(seq, list) or len(seq) != 3:
                 raise ValueError(f"Sequence {i} must be a list of [duration, [x,y,z], force_scale]")
-            
+
             duration, direction, force_scale = seq
-            
+
             # Validate duration
             if not isinstance(duration, (int, float)) or duration <= 0:
                 raise ValueError(f"Duration in sequence {i} must be a positive number")
-            
+
             # Validate direction
             if not isinstance(direction, list) or len(direction) != 3:
                 raise ValueError(f"Direction in sequence {i} must be a list of 3 numbers [x,y,z]")
             if not all(isinstance(x, (int, float)) for x in direction):
                 raise ValueError(f"Direction components in sequence {i} must be numbers")
-            
+
             # Validate force scale
             if not isinstance(force_scale, (int, float)):
                 raise ValueError(f"Force scale in sequence {i} must be a number")
-            
+
             # Normalize direction and create sequence
 
             def normalize(v):
                 """Normalize a vector to unit length.
-                
+
                 Args:
                     v: Vector to normalize as list of floats [x, y, z]
-                    
+
                 Returns:
                     Normalized vector as list of floats with unit length
                 """
@@ -214,11 +214,11 @@ def parse_tug_sequences(sequences):
                 if norm == 0:
                     return v
                 return [x/norm for x in v]
-            
+
             normalized_sequences.append([float(duration), normalize(direction), float(force_scale)])
-        
+
         return normalized_sequences
-        
+
     except json.JSONDecodeError as e:
         print(f"Error parsing JSON: {e}")
         print("Expected format: [[duration, [x,y,z], force_scale], ...]")
@@ -265,7 +265,7 @@ class GraspingSimulationConfig:
         self.start_with_pregrasp_cspace_position = start_with_pregrasp_cspace_position
         self.open_limit = open_limit
         self.disable_sim = disable_sim
-        
+
         self.record_pvd = record_pvd
         self.debug_single_index = debug_single_index
         self.output_failed_grasp_locations = output_failed_grasp_locations
@@ -274,10 +274,10 @@ class GraspingSimulationConfig:
         self.device = device
 
 # There are parameters that go with the object creation.  Seems like I should create
-# the sim based on teh gripper not hte object, and be able to run it on a per object 
+# the sim based on teh gripper not hte object, and be able to run it on a per object
 # basis. Changing parameters for the simulation maybe, but not the gripper?  Simpler
 # if setting can't be changed, but keeping the ones that can't in the config,
-# and the others as paramters could work. 
+# and the others as paramters could work.
 
 class GraspingSimulation:
     def __init__(self, config, force_headed=False, wait_for_debugger_attach=False):
@@ -297,9 +297,9 @@ class GraspingSimulation:
             grasp_file = args.grasp_file
             grasp_file_args = args
         grasp_sim_config = GraspingSimulationConfig(
-            max_num_envs=args.max_num_envs, env_spacing=args.env_spacing, fps=args.fps, force_magnitude=args.force_magnitude, initial_grasp_duration=args.initial_grasp_duration, 
-            tug_sequences=args.tug_sequences, start_with_pregrasp_cspace_position=args.start_with_pregrasp_cspace_position, 
-            open_limit=args.open_limit, disable_sim=args.disable_sim, record_pvd=args.record_pvd, debug_single_index=args.debug_single_index, 
+            max_num_envs=args.max_num_envs, env_spacing=args.env_spacing, fps=args.fps, force_magnitude=args.force_magnitude, initial_grasp_duration=args.initial_grasp_duration,
+            tug_sequences=args.tug_sequences, start_with_pregrasp_cspace_position=args.start_with_pregrasp_cspace_position,
+            open_limit=args.open_limit, disable_sim=args.disable_sim, record_pvd=args.record_pvd, debug_single_index=args.debug_single_index,
             output_failed_grasp_locations=args.output_failed_grasp_locations, flip_input_grasps=args.flip_input_grasps, enable_ccd=args.enable_ccd, device=args.device, max_num_grasps=args.max_num_grasps, grasp_file=grasp_file, grasp_file_args=grasp_file_args, grasp_guess_buffer=grasp_guess_buffer)
         return cls(grasp_sim_config, force_headed=args.force_headed, wait_for_debugger_attach=args.wait_for_debugger_attach)
 
@@ -310,7 +310,7 @@ class GraspingSimulation:
             from graspgen_utils import get_simulation_app
             self._simulation_app = get_simulation_app(__file__, force_headed=self.force_headed, wait_for_debugger_attach=self.wait_for_debugger_attach)
         return self._simulation_app
-    
+
     @property
     def kit_major_version(self):
         """Get the kit major version, initializing Isaac Lab if needed."""
@@ -330,10 +330,10 @@ class GraspingSimulation:
             self.load_grasp_file()
         else:
             self.load_grasp_guess_buffer()
-    
+
     def _setup_pvd_recording(self):
         """Setup PVD recording (requires Isaac Lab to be started)."""
-        if self.config.record_pvd:            
+        if self.config.record_pvd:
             if not self.simulation_app.DEFAULT_LAUNCHER_CONFIG['headless']:
                 print_red("PVD recording is only supported in headless mode, NOT recording PVD files")
             else:
@@ -341,7 +341,7 @@ class GraspingSimulation:
                 pvd_dir = "/tmp/pvdout2/"
                 if not os.path.exists(pvd_dir):
                     os.makedirs(pvd_dir)
-            
+
                 from isaacsim.core.utils.extensions import enable_extension
                 enable_extension("omni.physx.pvd")
 
@@ -354,13 +354,13 @@ class GraspingSimulation:
         # Load the grasp file
         with open(self.config.grasp_file, 'r') as f:
             self.original_grasp_yaml_data = yaml.safe_load(f)
-        
+
         if not self.original_grasp_yaml_data or 'grasps' not in self.original_grasp_yaml_data:
             raise ValueError("Invalid grasp file format")
-        
+
         # grasp_data['grasps'] may hold failed grasps, g,  (if g['confidence'] is 0,0)
         # we need to filter these out, and get a list of indices of valid grasps
-        
+
         if self.config.debug_single_index:
             for i, g in enumerate(self.original_grasp_yaml_data['grasps'].values()):
                 if i == self.config.debug_single_index:
@@ -386,7 +386,7 @@ class GraspingSimulation:
 
         grasp_names = list(self.original_grasp_yaml_data["grasps"].keys())
         first_grasp = self.original_grasp_yaml_data["grasps"][grasp_names[0]]
-        
+
         # We need to get the initial cspace values to set the initial joint positions
         if self.config.start_with_pregrasp_cspace_position and 'pregrasp_cspace_position' in first_grasp:
             cspace_key = "pregrasp_cspace_position"
@@ -480,11 +480,11 @@ class GraspingSimulation:
                 elif key == "open_limit" and command_line_value != "":
                     print_blue(f"Using command line {key}: {command_line_value} (overriding grasp file value: {grasp_file_value})")
                     return command_line_value
-            
+
             # Otherwise use grasp file value if it exists
             if grasp_file_value is not None:
                 return grasp_file_value
-            
+
             # Fallback to default values
             if key == "gripper_file":
                 return "bots/onrobot_rg6.usd"
@@ -529,10 +529,10 @@ class GraspingSimulation:
         num_grasps = int(ggb.num_successes)
         if self.config.max_num_grasps > 0:
             num_grasps = min(num_grasps, self.config.max_num_grasps)
-        
+
         # Clone the transforms with the limited number of grasps
         self.grasps = wp.array(shape=num_grasps, data=ggb.succ_buff.transforms, dtype=wp.transform, device=self.config.device)
-        
+
         self.open_limit = gpr.open_limit
         self.cspace_joint_names = gpr.joint_names
         self.cspace_joint_indices = torch.arange(len(gpr.joint_names))
@@ -548,7 +548,7 @@ class GraspingSimulation:
                   inputs=[offsets, self.cspace_joint_indices, gpr.joint_cspace_pos, self.cspace_positions],
                   device=self.config.device)
         wp.launch(kernel=get_bite_points_kernel,
-                  dim=num_grasps, 
+                  dim=num_grasps,
                   inputs=[offsets, gpr.bite_points, self.bite_points],
                   device=self.config.device)
         self.object_config = obj.config
@@ -582,7 +582,7 @@ class GraspingSimulation:
                 isaac_grasp_data["grasps"] = new_grasps
             else:
                 env_ids = torch.arange(gsb.num_grasps)
-            
+
             cspace_positions = gsb.cspace_positions.numpy()
             transforms = gsb.transforms.numpy()
             bite_points = gsb.bite_points.numpy()
@@ -598,7 +598,7 @@ class GraspingSimulation:
                     grasp["cspace_position"] = {}
                 for j, joint_name in enumerate(self.cspace_joint_names):
                     grasp["cspace_position"][str(joint_name)] = float(cspace_positions[env_id, j])
-                
+
                 # confidence
                 confidence = float(is_success[env_id])
                 if confidence:
@@ -619,7 +619,7 @@ class GraspingSimulation:
                 grasp["orientation"]["xyz"] = transforms[env_id, 3:6].tolist()
                 grasp["orientation"]["w"] = float(transforms[env_id, 6])
                 grasp["bite_point"] = bite_points[env_id].tolist()
-            
+
             print_green(f"created {num_successes} successes and {num_fails} fails")
         elif self.config.grasp_guess_buffer is not None:
             ggb = self.config.grasp_guess_buffer
@@ -634,10 +634,10 @@ class GraspingSimulation:
                 "gripper_frame_link": ggb.gripper.config.base_frame,
                 "open_limit": ggb.gripper.open_limit,
                 "finger_colliders": ggb.gripper.config.finger_colliders,
-                "base_length": ggb.gripper.base_length,
-                "approach_axis": ggb.gripper.approach_axis,
-                "bite_point": ggb.gripper.bite_point,
-                "bite_body_idx": ggb.gripper.finger_indices[0],
+                "base_length": float(ggb.gripper.base_length),
+                "approach_axis": int(ggb.gripper.approach_axis),
+                "bite_point": [float(x) for x in ggb.gripper.bite_point],
+                "bite_body_idx": int(ggb.gripper.finger_indices[0]),
                 "grasps": {
                 }
             }
@@ -648,7 +648,7 @@ class GraspingSimulation:
             pregrasp_cspace_positions = gsb.pregrasp_cspace_positions.numpy()
             bite_points = gsb.bite_points.numpy()
             pregrasp_bite_points = gsb.pregrasp_bite_points.numpy()
-            
+
             num_successes = 0
             num_fails = 0
 
@@ -717,19 +717,19 @@ class GraspingSimulation:
     def get_usd_path(self, file_path):
         # Expand user path (handle ~ in file paths)
         file_path = os.path.expanduser(file_path)
-        
+
         if file_path.lower().endswith(".usd") or file_path.lower().endswith(".usda") or file_path.lower().endswith(".usdz"):
             print_blue(f", with USD file: {file_path}")
             return file_path
         else:
-            # when we create the usd file, we need to have the scale on there not only to 
+            # when we create the usd file, we need to have the scale on there not only to
             # tell when our own cached usd is valid, but also because kit's import obj feature
             # will use the usd file when "converting" if it object_foo.usd already exists for object_foo.obj
             usd_file = os.path.splitext(file_path)[0] + f".usd"
             if self.object_config.obj2usd_use_existing_usd and os.path.exists(usd_file):
                 print_blue(f", and using existing USD file: {usd_file}")
                 return usd_file
-            
+
             print_blue(f", and creating USD file: {usd_file}")
             usd_file = self.create_usd(usd_file, file_path)
             return usd_file
@@ -740,7 +740,7 @@ class GraspingSimulation:
         _ = get_simulation_app(__file__, force_headed=self.force_headed, wait_for_debugger_attach=self.wait_for_debugger_attach)
         from mesh_utils import convert_mesh_to_usd
         from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
-        
+
         physics_material = RigidBodyMaterialCfg(
             static_friction=self.object_config.obj2usd_friction,
             dynamic_friction=self.object_config.obj2usd_friction,
@@ -756,7 +756,7 @@ class GraspingSimulation:
             physics_material=physics_material,
         )
         return usd_file
-    
+
     def build_grasp_sim_scene_cfg(self, num_envs):
         # Import Isaac Lab modules after ensuring Isaac Lab is started
         import isaaclab.sim as sim_utils
@@ -765,7 +765,7 @@ class GraspingSimulation:
         from isaaclab.sensors import ContactSensorCfg
         from isaaclab.utils import configclass
         from isaaclab.actuators import ImplicitActuatorCfg
-        
+
         @configclass
         class GraspingSceneCfg(InteractiveSceneCfg):
             """Configuration for a grasping scene."""
@@ -810,8 +810,8 @@ class GraspingSimulation:
             )
 
         scene_cfg = GraspingSceneCfg(
-                num_envs=num_envs, 
-                env_spacing=self.config.env_spacing, 
+                num_envs=num_envs,
+                env_spacing=self.config.env_spacing,
                 filter_collisions=True,
                 replicate_physics=False,#
             )
@@ -835,7 +835,7 @@ class GraspingSimulation:
         scene_cfg.contact_forces0.prim_path="{ENV_REGEX_NS}/Robot/" + str(finger_colliders_list[0]) #+ ".*"
         scene_cfg.contact_forces1.prim_path="{ENV_REGEX_NS}/Robot/" + str(finger_colliders_list[1]) #+ ".*"
         return scene_cfg
-    
+
     def get_initial_joint_pos(self, scene, joint_pos, num_envs, start_idx, buff):
         if self.cspace_joint_indices is None:
             self.cspace_joint_indices = [scene["gripper"].data.joint_names.index(name) for name in self.cspace_joint_names]
@@ -847,7 +847,7 @@ class GraspingSimulation:
             inputs=[start_idx, 0, buff.pregrasp_cspace_positions, self.cspace_joint_indices],
             outputs=[joint_pos],
             device=self.config.device)
-    
+
     def check_memory(self, prev_mem_list):
         print_purple(f"🔍 Checking memory usage...")
         import psutil
@@ -862,14 +862,14 @@ class GraspingSimulation:
 
     def clean_stage(self):
         # CRITICAL: Clear USD stage references (main leak source)
-        
+
         # Track RSS memory at the beginning
         import psutil
         import os
         process = psutil.Process(os.getpid())
         rss_start = process.memory_info().rss / 1024 / 1024  # Convert to MB
         print_blue(f"🧹 clean_stage() RSS Memory - Start: {rss_start:.1f} MB")
-        
+
         try:
             # More aggressive USD cleanup
             import omni.usd
@@ -881,19 +881,19 @@ class GraspingSimulation:
             for layer in stage.GetLayerStack():
                 if layer:
                     layer.Clear()
-            
+
             # Clear root layer specifically
             root_layer = stage.GetRootLayer()
             if root_layer:
                 root_layer.Clear()
-            
+
             # Clear session layer
             session_layer = stage.GetSessionLayer()
             if session_layer:
                 session_layer.Clear()
-            
+
             stage = None
-        
+
             # Get USD context and clear it
             if usd_context:
                 usd_context.close_stage()
@@ -901,12 +901,12 @@ class GraspingSimulation:
             print_red(f"⚠ USD cleanup failed: {usd_e}")
             import traceback
             traceback.print_exc()
-        
+
         # Track RSS memory at the end
         rss_end = process.memory_info().rss / 1024 / 1024  # Convert to MB
         rss_change = rss_end - rss_start
         print_blue(f"🧹 clean_stage() RSS Memory - End: {rss_end:.1f} MB (Change: {rss_change:+.1f} MB)")
-        
+
         # Force garbage collection after cleanup
         import gc
         gc.collect()
@@ -924,10 +924,10 @@ class GraspingSimulation:
         num_grasps = len(self.grasps)
         batch_count = 0
         self.usd_path = self.get_usd_path(self.object_config.object_file)
-        
+
         # Calculate total batches for progress tracking
         total_batches = (num_grasps + self.config.max_num_envs - 1) // self.config.max_num_envs
-        
+
         while start_idx < num_grasps:
             batch_count += 1
             num_envs = min(self.config.max_num_envs, num_grasps - start_idx)
@@ -935,9 +935,9 @@ class GraspingSimulation:
             self.run_grasp_sim(start_idx, num_envs, grasp_sim_buffer, batch_count, total_batches)
             start_idx += num_envs
             # Don't print newline - let the next batch or final message overwrite this line
-        
+
         validation_time = time.time() - start_time
-        
+
         # Clear the batch line (detailed validation summary will be printed by caller)
         print(f"\r", end="", flush=True)
         return grasp_sim_buffer
@@ -951,10 +951,10 @@ class GraspingSimulation:
         import isaaclab.sim as sim_utils
         from isaaclab.sim import build_simulation_context
         from isaaclab.scene import InteractiveScene
-        
+
         # Setup PVD recording if needed (requires Isaac Lab to be started)
         self._setup_pvd_recording()
-        
+
         # Initialize the simulation context with safer PhysX memory configuration
         # Reduce large GPU allocations that may be contaminated by Isaac Sim 5.0
         sim_cfg = sim_utils.SimulationCfg(
@@ -982,7 +982,7 @@ class GraspingSimulation:
             env_offset = ( math.sqrt(float(num_envs))/2.0 - 0.5)*self.config.env_spacing
             sim.set_camera_view(eye=((env_offset-0.09488407096425105, -env_offset-0.4248694091778259, 0.4521177672484193)),
                                 target=(env_offset, -env_offset, 0.15))
-            
+
             scene_cfg = self.build_grasp_sim_scene_cfg(num_envs)
             scene = InteractiveScene(scene_cfg)
             # this next line should match the collision filtering if logic, but not.
@@ -991,32 +991,32 @@ class GraspingSimulation:
                 scene.filter_collisions()
             run_start_time = time.time()
             sim.reset()
-            
+
             do_render = not simulation_app.DEFAULT_LAUNCHER_CONFIG['headless']
             # Get scene entities
             gripper = scene["gripper"]
             object = scene["object"]
             contact_forces0 = scene["contact_forces0"]
             contact_forces1 = scene["contact_forces1"]
-            
+
             # Define simulation stepping
             sim_dt = sim.get_physics_dt()
             sim_time = 0.0
-            
+
             initial_grasp_duration = self.config.initial_grasp_duration  # seconds for initial grasp
             grasp_start_time = 0.0
             force_start_time = grasp_start_time + initial_grasp_duration
-            
+
             if not (self.open_limit == "upper" or self.open_limit == "lower"):
                 print_red(f"Invalid open limit: {self.open_limit}")
             grasp_mode = 0 if self.open_limit == "upper" else 1
-            
+
             # Pre-compute world frame force tensors for each direction
             Gs = self.config.force_magnitude
             _, gravity_mag = sim.get_physics_context().get_gravity()
             acceleration = Gs * gravity_mag
             force_magnitude = acceleration * object.data.default_mass[0]
-            
+
             # Create force tensors for each sequence
             # TODO Move this to only be done once in validate_grasps, or validate_config?
             world_forces = {}
@@ -1034,7 +1034,7 @@ class GraspingSimulation:
             # unsqueeze to match force shape (env, 1, 3)
             zero_torque = torch.zeros(num_envs, 3, device=self.config.device).unsqueeze(1)
             wp_world_forces_working = wp.zeros(shape=(num_envs, 1), dtype=wp.vec3, device=self.config.device)
-            
+
             # Simulation loop
             wall_time = start_time = time.time()
             data_done = False
@@ -1042,7 +1042,7 @@ class GraspingSimulation:
             times_to_print["run_start"] = time.time() - run_start_time
             while_start_time = time.time()
             count = 0
-            
+
             while simulation_app.is_running():
                 # use the first frame to get the body positions from the initial joint positions
                 if count == 0:
@@ -1058,7 +1058,7 @@ class GraspingSimulation:
                         object_state[:, :3] += scene.env_origins
                     object.write_root_pose_to_sim(object_state[:, :7])
                     object.write_root_velocity_to_sim(object_state[:, 7:])
-                    
+
                     # Apply motion to gripper
                     # joint state
                     joint_pos = gripper.data.default_joint_pos.clone()#gripper.data.soft_joint_pos_limits[..., 1-grasp_mode].clone()##gripper.data.soft_joint_pos_limits[..., grasp_mode].clone() #gripper.data.default_joint_pos.clone()
@@ -1089,10 +1089,10 @@ class GraspingSimulation:
                         # Update buffers
                         scene.update(sim_dt)
                         #print(".", end="", flush=True)
-                    
+
                     gripper.write_joint_velocity_limit_to_sim(temp_vel_limits)
                     gripper.write_joint_velocity_to_sim(joint_vel)
-                    
+
                     #print("")
 
                 elif count == 1:
@@ -1119,14 +1119,14 @@ class GraspingSimulation:
                     object.write_root_pose_to_sim(root_state[:, :7])
                     object.write_root_velocity_to_sim(root_state[:, 7:])
 
-                
+
                     # gripper should always be closing *
                     if self.config.disable_sim:
                         joint_pos_target = joint_pos
                     else:
                         # Debug: Print joint limits and names for comparison between versions
                         joint_pos_target = gripper.data.soft_joint_pos_limits[..., grasp_mode].clone()  # Closed position
-                    
+
                     # Set joint position target
                     gripper.set_joint_position_target(joint_pos_target)
 
@@ -1134,14 +1134,14 @@ class GraspingSimulation:
                     scene.reset()
                     times_to_print["reset"] = time.time() - while_start_time
                     while_start_time = time.time()         # -- write data to sim
-                    
+
                 # Apply force to object if in force phase
                 if not data_done and sim_time >= force_start_time and sim_time < force_end_time and not self.config.disable_sim:
                     # Calculate current sequence index based on time
                     time_since_force_start = sim_time - force_start_time
                     current_sequence = 0
                     total_duration = 0.0
-                    
+
                     for i, (duration, _, _) in enumerate(self.tug_sequences):
                         if time_since_force_start < total_duration + duration:
                             current_sequence = i
@@ -1150,9 +1150,9 @@ class GraspingSimulation:
                     wp.launch(
                         kernel=world_to_object_force_kernel,
                         dim=num_envs,
-                        inputs=[object.data.root_quat_w, wp_world_forces[current_sequence], wp_world_forces_working], 
+                        inputs=[object.data.root_quat_w, wp_world_forces[current_sequence], wp_world_forces_working],
                         device=self.config.device)
-                    
+
                     # Apply force to object (in local frame)
                     object.set_external_force_and_torque(wp.to_torch(wp_world_forces_working,requires_grad=False), zero_torque)
 
@@ -1203,15 +1203,15 @@ class GraspingSimulation:
 
                     # we want to keep simming if the UI is open so the UI does not freeze
                     data_done = True
-                    if do_render and self.force_headed:                    
+                    if do_render and self.force_headed:
                         print_purple(f"In {__file__}, waiting for Isaac Lab to close...", flush=True)
-            
+
                         while simulation_app.is_running():
                             sim.step(render=do_render)
 
                     print("\033[0m", end="")
                     return
-                    
+
 
                 scene.write_data_to_sim()
                 # Perform step
@@ -1238,7 +1238,7 @@ class GraspingSimulation:
 def main(args):
     # Initialize simulation_app when needed
     simulation_app = start_isaac_lab_if_needed(file_name=__file__, headless = False if args.force_headed else args.headless, wait_for_debugger_attach=args.wait_for_debugger_attach)
-    
+
     grasp_sim_cfg = GraspingSimulationConfig(
                  max_num_envs = args.max_num_envs, env_spacing = args.env_spacing, fps = args.fps, force_magnitude = args.force_magnitude, initial_grasp_duration = args.initial_grasp_duration, tug_sequences = args.tug_sequences,
                  start_with_pregrasp_cspace_position = args.start_with_pregrasp_cspace_position, open_limit = args.open_limit,
@@ -1249,7 +1249,7 @@ def main(args):
     save_to_folder = os.path.join(os.environ.get('GRASP_DATASET_DIR', ''), "grasp_sim_data")
     if grasp_sim_buffer is not None:
         isaac_grasp_data, file_name = grasp_sim.create_isaac_grasp_data(grasp_sim_buffer, save_to_folder=save_to_folder)
-    
+
     # Don't close the simulation app if force_headed is used, let it run until user closes it
     if not args.force_headed:
         simulation_app.close()
@@ -1258,11 +1258,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Grasp validation through simulation part of Grasp Gen Data Generation.")
     add_grasp_sim_args(parser, globals(), **collect_grasp_sim_args(globals()))
     args_cli = parser.parse_args()
-    
+
     # Apply gripper configuration if specified
     apply_gripper_configuration(args_cli)
 
     print(f"enable_ccd: {args_cli.enable_ccd}")
-    
-    main(args_cli)
 
+    main(args_cli)
