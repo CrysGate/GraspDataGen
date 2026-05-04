@@ -48,20 +48,61 @@ GRIPPER_CONFIGS = {
         'finger_colliders': ['panda_rightfinger', 'panda_leftfinger'],
         'base_frame': 'panda_hand',
     },
+    'piper_h_v1_gripper': {
+        'gripper_file': 'bots/piper_h_v1_gripper.usd',
+        'finger_colliders': ['Link7', 'Link8'],
+        'base_frame': 'Link6',
+        'bite': 0.05,
+        'pinch_width_resolution': 8,
+        'open_axis': 1,
+        'approach_axis': 2,
+        'bite_mid_axis_position': 0.0,
+    },
+    'piper_l_v1_gripper': {
+        'gripper_file': 'bots/piper_l_v1_gripper.usd',
+        'finger_colliders': ['Link7', 'Link8'],
+        'base_frame': 'Link6',
+        'bite': 0.05,
+        'pinch_width_resolution': 8,
+        'open_axis': 1,
+        'approach_axis': 2,
+        'bite_mid_axis_position': 0.0,
+    },
+    'piper_v1_gripper': {
+        'gripper_file': 'bots/piper_v1_gripper.usd',
+        'finger_colliders': ['link7', 'link8'],
+        'base_frame': 'link6',
+        'bite': 0.05,
+        'pinch_width_resolution': 8,
+    },
+    'piper_v2_gripper': {
+        'gripper_file': 'bots/piper_v2_gripper.usd',
+        'finger_colliders': ['link7', 'link8'],
+        'base_frame': 'link6',
+        'bite': 0.05,
+        'pinch_width_resolution': 8,
+    },
+    'piper_x_v1_gripper': {
+        'gripper_file': 'bots/piper_x_v1_gripper.usd',
+        'finger_colliders': ['Link7', 'Link8'],
+        'base_frame': 'Link6',
+        'bite': 0.05,
+        'pinch_width_resolution': 8,
+    },
 }
 
 
 def get_gripper_config(gripper_type):
     """
     Get gripper configuration based on gripper type string.
-    
+
     Args:
         gripper_type (str): One of the predefined gripper types
-        
+
     Returns:
         dict: Dictionary containing parameter overrides for the specified
         gripper type
-        
+
     Raises:
         ValueError: If gripper_type is not found in configurations
     """
@@ -69,14 +110,14 @@ def get_gripper_config(gripper_type):
         available = list(GRIPPER_CONFIGS.keys())
         raise ValueError(f"Unknown gripper type: {gripper_type}. "
                         f"Must be one of: {available}")
-    
+
     return GRIPPER_CONFIGS[gripper_type]
 
 def apply_gripper_config_to_args(args, gripper_config):
     """
     Apply gripper configuration overrides to the args object.
     Only overrides values that weren't explicitly provided on the command line.
-    
+
     Args:
         args: The parsed arguments object
         gripper_config: Dictionary of parameter overrides
@@ -96,7 +137,7 @@ def apply_gripper_config_to_args(args, gripper_config):
                         continue
                 except ValueError:
                     pass  # Flag not found, continue with override
-            
+
             setattr(args, param_name, value)
             print_blue(f"  Overriding {param_name}: {value}")
         else:
@@ -108,8 +149,8 @@ def apply_gripper_config_to_args(args, gripper_config):
 def list_available_grippers():
     """
     List all available gripper configurations.
-    
+
     Returns:
         list: List of available gripper type names
     """
-    return list(GRIPPER_CONFIGS.keys()) 
+    return list(GRIPPER_CONFIGS.keys())

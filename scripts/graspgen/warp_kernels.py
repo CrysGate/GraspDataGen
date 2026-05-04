@@ -678,6 +678,55 @@ def intersect_other_body_with_offsets(
         is_invalid[tid] = GraspState.IN_COLLISION
 
 @wp.kernel
+def compute_body_to_object_xforms_kernel(
+    object_pos_w: wp.array(dtype=wp.vec3),
+    object_quat_w: wp.array(dtype=wp.quat),  # Isaac Lab format: (qw, qx, qy, qz)
+    body_pos_w: wp.array2d(dtype=wp.vec3),
+    body_quat_w: wp.array2d(dtype=wp.quat),  # Isaac Lab format: (qw, qx, qy, qz)
+    body_idx: wp.int32,
+    body_to_object_xforms: wp.array(dtype=wp.mat44),
+):
+    env_id = wp.tid()
+
+    object_q = object_quat_w[env_id]
+    body_q = body_quat_w[env_id, body_idx]
+    object_xform = wp.transform(
+        object_pos_w[env_id],
+        wp.quat(object_q[1], object_q[2], object_q[3], object_q[0]),
+    )
+    body_xform = wp.transform(
+        body_pos_w[env_id, body_idx],
+        wp.quat(body_q[1], body_q[2], body_q[3], body_q[0]),
+    )
+
+    body_to_object_xforms[env_id] = transform_to_mat44(wp.transform_inverse(object_xform) * body_xform)
+
+@wp.kernel
+def check_mesh_interpenetration_kernel(
+    body_verts: wp.array(dtype=wp.vec3),
+    body_tris: wp.array(dtype=wp.int32),
+    object_mesh: wp.uint64,
+    object_verts: wp.array(dtype=wp.vec3),
+    object_tris: wp.array(dtype=wp.int32),
+    body_to_object_xforms: wp.array(dtype=wp.mat44),
+    has_interpenetration: wp.array(dtype=wp.int32),
+):
+    env_id, face = wp.tid()
+    if has_interpenetration[env_id] != 0:
+        return
+
+    if triangle_mesh_intersect(
+        face,
+        body_to_object_xforms[env_id],
+        body_verts,
+        body_tris,
+        object_mesh,
+        object_verts,
+        object_tris,
+    ):
+        has_interpenetration[env_id] = 1
+
+@wp.kernel
 def intersect_with_offsets(
     verts0: wp.array(dtype=wp.vec3),
     tris0: wp.array(dtype=wp.int32),
@@ -955,13 +1004,13 @@ def ingest_grasp_guess_data_kernel(
 def get_cspace_positions_kernel(
     offsets: wp.array(dtype=wp.int32), # num_grasps
     cspace_joint_indices: wp.array(dtype=wp.int32), # num_cspace_joint_names
-    joint_cspace_pos: wp.array2d(dtype=wp.float32), # num_grasps x num_cspace_joints
+    joint_cspace_pos: wp.array2d(dtype=wp.float32), # num_openings x num_cspace_joints
     cspace_positions: wp.array2d(dtype=wp.float32), # num_grasps x num_cspace_joint_names
 ):
     grasp_idx, joint_idx = wp.tid()
     offset = offsets[grasp_idx]
     cspace_joint_idx = cspace_joint_indices[joint_idx]
-    cspace_positions[grasp_idx, joint_idx] = joint_cspace_pos[grasp_idx, cspace_joint_idx]
+    cspace_positions[grasp_idx, joint_idx] = joint_cspace_pos[offset, cspace_joint_idx]
 
 @wp.kernel
 def get_bite_points_kernel(

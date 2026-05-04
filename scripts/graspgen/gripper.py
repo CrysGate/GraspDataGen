@@ -31,6 +31,9 @@ default_base_frame = "base_frame"
 default_open_configuration = '{}'
 default_pinch_width_resolution = 8
 default_bite = 0.01
+default_approach_axis = -1
+default_open_axis = -1
+default_bite_mid_axis_position = None
 
 def collect_gripper_args(input_dict):
     desired_keys = [
@@ -40,7 +43,10 @@ def collect_gripper_args(input_dict):
         "default_base_frame",
         "default_open_configuration",
         "default_pinch_width_resolution",
-        "default_bite"]
+        "default_bite",
+        "default_approach_axis",
+        "default_open_axis",
+        "default_bite_mid_axis_position"]
     kwargs = {}
     for key in desired_keys:
         if key in input_dict:
@@ -57,7 +63,10 @@ def add_gripper_args(parser, param_dict,
                      default_base_frame=default_base_frame,
                      default_open_configuration=default_open_configuration,
                      default_pinch_width_resolution=default_pinch_width_resolution,
-                     default_bite=default_bite):
+                     default_bite=default_bite,
+                     default_approach_axis=default_approach_axis,
+                     default_open_axis=default_open_axis,
+                     default_bite_mid_axis_position=default_bite_mid_axis_position):
     
     # Register the gripper group since we'll be adding arguments to it
     from graspgen_utils import register_argument_group, add_create_gripper_args, collect_create_gripper_args
@@ -83,6 +92,14 @@ def add_gripper_args(parser, param_dict,
                      help="Number of pinch opening widths to test.")
     add_arg_to_group('gripper', parser, "--open_configuration", type=str, default=default_open_configuration,
                      help="Initial state of the original grasp guess.")
+    add_arg_to_group('gripper', parser, "--approach_axis", type=int, default=default_approach_axis,
+                     choices=[-1, 0, 1, 2],
+                     help="Override inferred gripper approach axis. -1 means infer automatically.")
+    add_arg_to_group('gripper', parser, "--open_axis", type=int, default=default_open_axis,
+                     choices=[-1, 0, 1, 2],
+                     help="Override inferred gripper opening axis. -1 means infer automatically.")
+    add_arg_to_group('gripper', parser, "--bite_mid_axis_position", type=float, default=default_bite_mid_axis_position,
+                     help="Override the bite point coordinate on the gripper mid axis. Default uses the finger collider bbox center.")
     
     add_isaac_lab_args_if_needed(parser)
 
@@ -112,7 +129,9 @@ class GripperConfig:
     """Configuration class for gripper creation and loading."""
     
     def __init__(self, gripper_file, finger_colliders, base_frame, bite,
-                 pinch_width_resolution, open_configuration, device):
+                 pinch_width_resolution, open_configuration, device,
+                 approach_axis=default_approach_axis, open_axis=default_open_axis,
+                 bite_mid_axis_position=default_bite_mid_axis_position):
         self.gripper_file = gripper_file
         self.finger_colliders = finger_colliders
         self.base_frame = base_frame
@@ -122,6 +141,9 @@ class GripperConfig:
             open_configuration = open_configuration_string_to_dict(open_configuration)
         self.open_configuration = open_configuration
         self.device = device
+        self.approach_axis = approach_axis
+        self.open_axis = open_axis
+        self.bite_mid_axis_position = bite_mid_axis_position
     
     def to_dict(self):
         return {
@@ -132,6 +154,9 @@ class GripperConfig:
             "pinch_width_resolution": self.pinch_width_resolution,
             "open_configuration": self.open_configuration,
             "device": self.device,
+            "approach_axis": self.approach_axis,
+            "open_axis": self.open_axis,
+            "bite_mid_axis_position": self.bite_mid_axis_position,
         }
 
 def create_gripper(gripper_config, headless=True, force_headed=False,
@@ -198,7 +223,18 @@ class Gripper:
 
     @classmethod
     def from_args(cls, args):
-        gripper_config = GripperConfig(args.gripper_file, args.finger_colliders, args.base_frame, args.bite, args.pinch_width_resolution, args.open_configuration, args.device)
+        gripper_config = GripperConfig(
+            args.gripper_file,
+            args.finger_colliders,
+            args.base_frame,
+            args.bite,
+            args.pinch_width_resolution,
+            args.open_configuration,
+            args.device,
+            getattr(args, "approach_axis", default_approach_axis),
+            getattr(args, "open_axis", default_open_axis),
+            getattr(args, "bite_mid_axis_position", default_bite_mid_axis_position),
+        )
         measure_convergence = getattr(args, 'measure_convergence', DEFAULT_MEASURE_CONVERGENCE)
         convergence_iterations = getattr(args, 'convergence_iterations', DEFAULT_CONVERGENCE_ITERATIONS)
         return create_gripper(
@@ -259,7 +295,10 @@ class Gripper:
                     saved_config['base_frame'] != config.base_frame or
                     saved_config['bite'] != config.bite or
                     saved_config['pinch_width_resolution'] != config.pinch_width_resolution or
-                    saved_config['open_configuration'] != config.open_configuration):# or
+                    saved_config['open_configuration'] != config.open_configuration or
+                    saved_config.get('approach_axis', default_approach_axis) != config.approach_axis or
+                    saved_config.get('open_axis', default_open_axis) != config.open_axis or
+                    saved_config.get('bite_mid_axis_position', default_bite_mid_axis_position) != config.bite_mid_axis_position):# or
                     # maybe check what it was saved with? saved_config['device'][:3] != config.device[:3]):
                     print_yellow(f"Saved config doesn't match input config.")
                     print_yellow(f"Saved config: {saved_config}")
@@ -344,6 +383,9 @@ class Gripper:
                 'pinch_width_resolution': self.config.pinch_width_resolution,
                 'open_configuration': self.config.open_configuration,
                 'device': self.config.device,
+                'approach_axis': self.config.approach_axis,
+                'open_axis': self.config.open_axis,
+                'bite_mid_axis_position': self.config.bite_mid_axis_position,
             },
 
             'open_limit': self.open_limit,

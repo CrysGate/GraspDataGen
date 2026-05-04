@@ -17,7 +17,7 @@
 # flake8: noqa: E303, E111
 import argparse
 from graspgen_utils import add_arg_to_group, save_yaml, print_green, add_isaac_lab_args_if_needed, print_purple, print_red, print_yellow, print_blue, start_isaac_lab_if_needed, open_configuration_string_to_dict, str_to_bool
-from gripper import add_gripper_args, collect_gripper_args, apply_gripper_configuration
+from gripper import Gripper, GripperConfig, add_gripper_args, collect_gripper_args, apply_gripper_configuration, create_gripper
 from object import add_object_args, collect_object_args, ObjectConfig
 import os
 
@@ -43,6 +43,14 @@ default_debug_single_index = 0
 default_output_failed_grasp_locations = False
 default_flip_input_grasps = False
 default_enable_ccd = True
+default_enable_gravity_after_grasp = True
+default_gravity_hold_seconds = 0.5
+default_gravity_force_scale = 1.0
+default_contact_force_threshold = 1e-3
+default_headed_hold_seconds = -1.0
+default_reject_interpenetration = True
+default_reject_finger_interpenetration = False
+default_debug_validation_stats = False
 
 def collect_grasp_sim_args(input_dict):
     desired_keys = [
@@ -62,7 +70,15 @@ def collect_grasp_sim_args(input_dict):
         "default_debug_single_index",
         "default_output_failed_grasp_locations",
         "default_flip_input_grasps",
-        "default_enable_ccd"]
+        "default_enable_ccd",
+        "default_enable_gravity_after_grasp",
+        "default_gravity_hold_seconds",
+        "default_gravity_force_scale",
+        "default_contact_force_threshold",
+        "default_headed_hold_seconds",
+        "default_reject_interpenetration",
+        "default_reject_finger_interpenetration",
+        "default_debug_validation_stats"]
     kwargs = {}
     for key in desired_keys:
         if key in input_dict:
@@ -90,7 +106,15 @@ def add_grasp_sim_args(parser, param_dict, default_grasp_file=default_grasp_file
                        default_debug_single_index=default_debug_single_index,
                        default_output_failed_grasp_locations=default_output_failed_grasp_locations,
                        default_flip_input_grasps=default_flip_input_grasps,
-                       default_enable_ccd=default_enable_ccd):
+                       default_enable_ccd=default_enable_ccd,
+                       default_enable_gravity_after_grasp=default_enable_gravity_after_grasp,
+                       default_gravity_hold_seconds=default_gravity_hold_seconds,
+                       default_gravity_force_scale=default_gravity_force_scale,
+                       default_contact_force_threshold=default_contact_force_threshold,
+                       default_headed_hold_seconds=default_headed_hold_seconds,
+                       default_reject_interpenetration=default_reject_interpenetration,
+                       default_reject_finger_interpenetration=default_reject_finger_interpenetration,
+                       default_debug_validation_stats=default_debug_validation_stats):
 
     # Register argument groups since we'll be adding arguments to them
     from graspgen_utils import register_argument_group
@@ -142,6 +166,22 @@ def add_grasp_sim_args(parser, param_dict, default_grasp_file=default_grasp_file
         help="Flip (rotate 180 degrees around approach-axis) the input grasps for debugging purposes.")
     add_arg_to_group('grasp_sim', parser, "--enable_ccd", type=str_to_bool, nargs='?', const=True, default=default_enable_ccd,
         help="Enable continuous collision detection (CCD) in the physics simulation (prevents fast-moving objects from tunneling through each other).")
+    add_arg_to_group('grasp_sim', parser, "--enable_gravity_after_grasp", type=str_to_bool, nargs='?', const=True, default=default_enable_gravity_after_grasp,
+        help="Apply a post-disturbance gravity hold before judging grasp success.")
+    add_arg_to_group('grasp_sim', parser, "--gravity_hold_seconds", type=float, default=default_gravity_hold_seconds,
+        help="Seconds to apply gravity to the object after all tug disturbances finish. 0 disables the post-disturbance gravity stability check.")
+    add_arg_to_group('grasp_sim', parser, "--gravity_force_scale", type=float, default=default_gravity_force_scale,
+        help="Scale for the post-disturbance gravity force. 1.0 means mass * gravity.")
+    add_arg_to_group('grasp_sim', parser, "--contact_force_threshold", type=float, default=default_contact_force_threshold,
+        help="Minimum filtered finger-object normal force in Newtons required on each finger for grasp success.")
+    add_arg_to_group('grasp_sim', parser, "--headed_hold_seconds", type=float, default=default_headed_hold_seconds,
+        help="Seconds to keep a headed batch visible after data collection. Negative values wait until the window is closed.")
+    add_arg_to_group('grasp_sim', parser, "--reject_interpenetration", type=str_to_bool, nargs='?', const=True, default=default_reject_interpenetration,
+        help="Reject grasps whose final gripper collision mesh intersects the object mesh.")
+    add_arg_to_group('grasp_sim', parser, "--reject_finger_interpenetration", type=str_to_bool, nargs='?', const=True, default=default_reject_finger_interpenetration,
+        help="Also reject final intersections between the object and the configured finger bodies. By default only non-finger bodies are rejected because finger contact is expected in a valid grasp.")
+    add_arg_to_group('grasp_sim', parser, "--debug_validation_stats", action="store_true", default=default_debug_validation_stats,
+        help="Print final contact/interpenetration counts for each validation batch.")
 
     add_isaac_lab_args_if_needed(parser)
 
@@ -156,7 +196,9 @@ import warp as wp
 import json
 from warp_kernels import (
     world_to_object_force_kernel, get_joint_pos_kernel, compute_relative_pos_and_rot_kernel,
-    get_joint_pos_kernel, set_is_success_kernel, get_body_pos_kernel, transform_inverse_kernel, get_cspace_positions_kernel, get_bite_points_kernel
+    get_joint_pos_kernel, set_is_success_kernel, get_body_pos_kernel, transform_inverse_kernel, get_cspace_positions_kernel, get_bite_points_kernel,
+    add_constant_kernel,
+    compute_body_to_object_xforms_kernel, check_mesh_interpenetration_kernel
 )
 import time
 from datetime import datetime
@@ -246,7 +288,9 @@ class GraspingSimulationConfig:
     def __init__(self, max_num_envs, env_spacing, fps, force_magnitude, initial_grasp_duration,
                  tug_sequences, start_with_pregrasp_cspace_position,
                  open_limit, disable_sim, record_pvd, debug_single_index,
-                 output_failed_grasp_locations, flip_input_grasps, enable_ccd, device, max_num_grasps=0, grasp_file = None, grasp_guess_buffer = None, grasp_file_args = None):
+                 output_failed_grasp_locations, flip_input_grasps, enable_ccd,
+                 enable_gravity_after_grasp, gravity_hold_seconds, gravity_force_scale, contact_force_threshold, headed_hold_seconds,
+                 reject_interpenetration, reject_finger_interpenetration, debug_validation_stats, device, max_num_grasps=0, grasp_file = None, grasp_guess_buffer = None, grasp_file_args = None):
         if grasp_guess_buffer is None and grasp_file is None:
             raise ValueError("GraspGuessBuffer or grasp_file must be provided")
         if grasp_guess_buffer is not None and grasp_file is not None:
@@ -271,6 +315,14 @@ class GraspingSimulationConfig:
         self.output_failed_grasp_locations = output_failed_grasp_locations
         self.flip_input_grasps = flip_input_grasps
         self.enable_ccd = enable_ccd
+        self.enable_gravity_after_grasp = enable_gravity_after_grasp
+        self.gravity_hold_seconds = gravity_hold_seconds
+        self.gravity_force_scale = gravity_force_scale
+        self.contact_force_threshold = contact_force_threshold
+        self.headed_hold_seconds = headed_hold_seconds
+        self.reject_interpenetration = reject_interpenetration
+        self.reject_finger_interpenetration = reject_finger_interpenetration
+        self.debug_validation_stats = debug_validation_stats
         self.device = device
 
 # There are parameters that go with the object creation.  Seems like I should create
@@ -300,7 +352,14 @@ class GraspingSimulation:
             max_num_envs=args.max_num_envs, env_spacing=args.env_spacing, fps=args.fps, force_magnitude=args.force_magnitude, initial_grasp_duration=args.initial_grasp_duration,
             tug_sequences=args.tug_sequences, start_with_pregrasp_cspace_position=args.start_with_pregrasp_cspace_position,
             open_limit=args.open_limit, disable_sim=args.disable_sim, record_pvd=args.record_pvd, debug_single_index=args.debug_single_index,
-            output_failed_grasp_locations=args.output_failed_grasp_locations, flip_input_grasps=args.flip_input_grasps, enable_ccd=args.enable_ccd, device=args.device, max_num_grasps=args.max_num_grasps, grasp_file=grasp_file, grasp_file_args=grasp_file_args, grasp_guess_buffer=grasp_guess_buffer)
+            output_failed_grasp_locations=args.output_failed_grasp_locations, flip_input_grasps=args.flip_input_grasps, enable_ccd=args.enable_ccd,
+            enable_gravity_after_grasp=args.enable_gravity_after_grasp, gravity_hold_seconds=args.gravity_hold_seconds,
+            gravity_force_scale=args.gravity_force_scale, contact_force_threshold=args.contact_force_threshold,
+            headed_hold_seconds=args.headed_hold_seconds,
+            reject_interpenetration=args.reject_interpenetration,
+            reject_finger_interpenetration=args.reject_finger_interpenetration,
+            debug_validation_stats=args.debug_validation_stats,
+            device=args.device, max_num_grasps=args.max_num_grasps, grasp_file=grasp_file, grasp_file_args=grasp_file_args, grasp_guess_buffer=grasp_guess_buffer)
         return cls(grasp_sim_config, force_headed=args.force_headed, wait_for_debugger_attach=args.wait_for_debugger_attach)
 
     @property
@@ -324,12 +383,145 @@ class GraspingSimulation:
             self.tug_sequences = parse_tug_sequences(self.config.tug_sequences)
         else:
             self.tug_sequences = self.config.tug_sequences
+        if self.config.gravity_hold_seconds < 0.0:
+            raise ValueError("--gravity_hold_seconds must be >= 0")
+        if self.config.contact_force_threshold < 0.0:
+            raise ValueError("--contact_force_threshold must be >= 0")
 
         # get the grasps we need to simulate form the grasp file or the grasp guess buffer
         if self.config.grasp_file is not None:
             self.load_grasp_file()
         else:
             self.load_grasp_guess_buffer()
+
+    def _make_interpenetration_meshes_in_link_frame(self, gripper):
+        """Return gripper meshes in the same link frames reported by Isaac Lab."""
+        meshes = []
+        finger0_idx = gripper.finger_indices[0] if len(gripper.finger_indices) > 0 else -1
+        bite_point = wp.vec3(float(self.bite_point[0]), float(self.bite_point[1]), float(self.bite_point[2]))
+
+        for body_idx, body_mesh in enumerate(gripper.body_meshes):
+            points = wp.clone(body_mesh.points, device=self.config.device)
+            indices = wp.clone(body_mesh.indices, device=self.config.device)
+
+            # create_gripper_lab stores finger0 vertices relative to the bite
+            # point for grasp sampling. The final sim poses are raw link poses,
+            # so put that mesh back into its link frame before intersection.
+            if body_idx == finger0_idx:
+                wp.launch(
+                    kernel=add_constant_kernel,
+                    dim=len(points),
+                    inputs=[points, bite_point],
+                    device=self.config.device,
+                )
+
+            meshes.append(wp.Mesh(points, indices))
+
+        return meshes
+
+    def load_interpenetration_meshes_from_grasp_file(self):
+        """Load meshes needed for the final gripper-object intersection check."""
+        args = self.config.grasp_file_args
+        base_frame = getattr(args, "base_frame", "base_frame")
+        bite = getattr(args, "bite", 0.01)
+        pinch_width_resolution = getattr(args, "pinch_width_resolution", 8)
+        open_configuration = getattr(args, "open_configuration", "{}")
+
+        gripper_config = GripperConfig(
+            self.gripper_file,
+            self.finger_colliders,
+            base_frame,
+            bite,
+            pinch_width_resolution,
+            open_configuration,
+            self.config.device,
+        )
+        gripper = Gripper.load(gripper_config, skip_config_validation=True)
+        if gripper is None:
+            print_yellow(f"Creating gripper definition for interpenetration checks: {self.gripper_file}")
+            gripper = create_gripper(
+                gripper_config,
+                headless=True,
+                force_headed=False,
+                wait_for_debugger_attach=self.wait_for_debugger_attach,
+                save_gripper=True,
+            )
+        if gripper is None:
+            raise ValueError(
+                "--reject_interpenetration could not load or create a gripper definition for "
+                f"{self.gripper_file}"
+            )
+
+        from grasp_guess import GuessObject
+
+        self.gripper_body_names = list(gripper.body_names)
+        self.interpenetration_finger_indices = set(gripper.finger_indices)
+        self.gripper_body_meshes = self._make_interpenetration_meshes_in_link_frame(gripper)
+        self.object_mesh = GuessObject(self.object_config, device=self.config.device).mesh
+
+    def compute_no_interpenetration(self, object, gripper, num_envs):
+        if not self.config.reject_interpenetration:
+            return torch.ones(num_envs, dtype=torch.bool, device=self.config.device)
+        if not hasattr(self, "object_mesh") or not hasattr(self, "gripper_body_meshes"):
+            raise RuntimeError("Interpenetration rejection was enabled, but collision meshes were not loaded.")
+
+        has_interpenetration = wp.zeros(shape=num_envs, dtype=wp.int32, device=self.config.device)
+        body_to_object_xforms = wp.array(shape=num_envs, dtype=wp.mat44, device=self.config.device)
+
+        if self.config.reject_finger_interpenetration:
+            body_indices = range(len(self.gripper_body_meshes))
+        else:
+            body_indices = [
+                idx for idx in range(len(self.gripper_body_meshes))
+                if idx not in getattr(self, "interpenetration_finger_indices", set())
+            ]
+
+        body_hit_counts = []
+        for body_idx in body_indices:
+            body_mesh = self.gripper_body_meshes[body_idx]
+            num_faces = len(body_mesh.indices) // 3
+            if num_faces == 0:
+                continue
+            if self.config.debug_validation_stats:
+                before_hits = wp.to_torch(has_interpenetration).clone()
+            wp.launch(
+                kernel=compute_body_to_object_xforms_kernel,
+                dim=num_envs,
+                inputs=[
+                    object.data.root_pos_w,
+                    object.data.root_quat_w,
+                    gripper.data.body_link_pos_w,
+                    gripper.data.body_link_quat_w,
+                    body_idx,
+                    body_to_object_xforms,
+                ],
+                device=self.config.device,
+            )
+            wp.launch(
+                kernel=check_mesh_interpenetration_kernel,
+                dim=(num_envs, num_faces),
+                inputs=[
+                    body_mesh.points,
+                    body_mesh.indices,
+                    self.object_mesh.id,
+                    self.object_mesh.points,
+                    self.object_mesh.indices,
+                    body_to_object_xforms,
+                    has_interpenetration,
+                ],
+                device=self.config.device,
+            )
+            if self.config.debug_validation_stats:
+                after_hits = wp.to_torch(has_interpenetration)
+                body_name = getattr(self, "gripper_body_names", [str(i) for i in range(len(self.gripper_body_meshes))])[body_idx]
+                body_hit_counts.append((body_name, int((after_hits & ~before_hits).sum().item())))
+
+        if self.config.debug_validation_stats and body_hit_counts:
+            body_stats = ", ".join(f"{name}={count}/{num_envs}" for name, count in body_hit_counts if count > 0)
+            if body_stats:
+                print(f"interpenetration bodies: {body_stats}")
+
+        return wp.to_torch(has_interpenetration) == 0
 
     def _setup_pvd_recording(self):
         """Setup PVD recording (requires Isaac Lab to be started)."""
@@ -513,6 +705,8 @@ class GraspingSimulation:
         self.object_config = ObjectConfig.from_isaac_grasp_dict(self.original_grasp_yaml_data, self.config.grasp_file_args)
         self.bite_point = get_value_with_priority("bite_point", grasp_file_bite_point, [0.0, 0.0, 0.0])
         self.bite_body_idx = get_value_with_priority("bite_body_idx", grasp_file_bite_body_idx, 0)
+        if self.config.reject_interpenetration:
+            self.load_interpenetration_meshes_from_grasp_file()
 
     def load_grasp_guess_buffer(self):
         ggb = self.config.grasp_guess_buffer
@@ -521,9 +715,25 @@ class GraspingSimulation:
         if self.config.flip_input_grasps: # TODO
             print_yellow("Flipping input grasps currently only works with grasp_file, not grasp_guess_buffer")
 
+        self.open_limit = gpr.open_limit
+        self.cspace_joint_names = gpr.joint_names
+        self.driven_joints = gpr.driven_joints
+        self.bite_body_idx = gpr.finger_indices[0]
+        self.bite_point = gpr.bite_point
+        self.object_config = obj.config
+        self.gripper_file = gpr.config.gripper_file
+        self.finger_colliders = gpr.config.finger_colliders
+        self.object_mesh = obj.mesh
+        self.gripper_body_names = list(gpr.body_names)
+        self.interpenetration_finger_indices = set(gpr.finger_indices)
+        self.gripper_body_meshes = self._make_interpenetration_meshes_in_link_frame(gpr)
+
         if ggb.succ_buff is None:
             print_yellow("Grasp guess buffer has no successful grasps")
             self.grasps = wp.array(shape=0, dtype=wp.transform, device=self.config.device)
+            self.cspace_joint_indices = wp.array(shape=0, dtype=wp.int32, device=self.config.device)
+            self.cspace_positions = wp.array(shape=(0, len(self.cspace_joint_names)), dtype=wp.float32, device=self.config.device)
+            self.bite_points = wp.array(shape=0, dtype=wp.vec3, device=self.config.device)
             return
         # Apply max_num_grasps limit if specified (0 means use all grasps)
         num_grasps = int(ggb.num_successes)
@@ -531,15 +741,10 @@ class GraspingSimulation:
             num_grasps = min(num_grasps, self.config.max_num_grasps)
 
         # Clone the transforms with the limited number of grasps
-        self.grasps = wp.array(shape=num_grasps, data=ggb.succ_buff.transforms, dtype=wp.transform, device=self.config.device)
+        self.grasps = wp.array(shape=num_grasps, data=ggb.succ_buff.transforms[:num_grasps], dtype=wp.transform, device=self.config.device)
 
-        self.open_limit = gpr.open_limit
-        self.cspace_joint_names = gpr.joint_names
         self.cspace_joint_indices = torch.arange(len(gpr.joint_names))
-        self.driven_joints = gpr.driven_joints
         self.cspace_joint_indices = wp.array(self.cspace_joint_indices, dtype=wp.int32, device=self.config.device)  # type: ignore[arg-type]
-        self.bite_body_idx = gpr.finger_indices[0]
-        self.bite_point = gpr.bite_point
         offsets = ggb.succ_buff.pregrasp_offsets if self.config.start_with_pregrasp_cspace_position else ggb.succ_buff.offsets
         self.cspace_positions = wp.array(shape=(num_grasps, len(self.cspace_joint_names)), dtype=wp.float32, device=self.config.device)
         self.bite_points = wp.array(shape=num_grasps, dtype=wp.vec3, device=self.config.device)
@@ -551,16 +756,12 @@ class GraspingSimulation:
                   dim=num_grasps,
                   inputs=[offsets, gpr.bite_points, self.bite_points],
                   device=self.config.device)
-        self.object_config = obj.config
-        self.gripper_file = gpr.config.gripper_file
-        self.finger_colliders = gpr.config.finger_colliders
-
     def create_isaac_grasp_data(self, grasp_sim_buffer, save_successes = True, save_fails = False, only_driven_joints = True, save_to_folder = None, file_name_prefix = "", file_extension_prefix = ""):
         gsb = grasp_sim_buffer
         if self.config.grasp_file is not None:
             # Note only_driven_joints does not work with grasp_file, what comes in is what comes out as far as joints go.
             isaac_grasp_data = copy.deepcopy(self.original_grasp_yaml_data)
-            if 'created_with' not in isaac_grasp_data or isaac_grasp_data['created_with'] != "grasp_guess":
+            if 'created_with' not in isaac_grasp_data or isaac_grasp_data['created_with'] not in ("grasp_guess", "grasp_sim"):
                 print_red("Grasp file was not created with grasp_guess")
             isaac_grasp_data["created_with"] = "grasp_sim"
             isaac_grasp_data["created_at"] = datetime.now().isoformat()
@@ -569,6 +770,8 @@ class GraspingSimulation:
             #is_suss_cpu = gsb.is_success.numpy().tolist()
             is_success = wp.to_torch(gsb.is_success)
             grasp_keys = list(isaac_grasp_data["grasps"].keys())
+            evaluated_successes = int(torch.sum(is_success).item())
+            evaluated_fails = int(len(is_success) - evaluated_successes)
             num_successes = 0
             num_fails = 0
             if (save_successes and not save_fails) or (not save_successes and save_fails):
@@ -620,7 +823,10 @@ class GraspingSimulation:
                 grasp["orientation"]["w"] = float(transforms[env_id, 6])
                 grasp["bite_point"] = bite_points[env_id].tolist()
 
-            print_green(f"created {num_successes} successes and {num_fails} fails")
+            print_green(
+                f"evaluated {evaluated_successes} successes and {evaluated_fails} fails; "
+                f"saved {num_successes} successes and {num_fails} fails"
+            )
         elif self.config.grasp_guess_buffer is not None:
             ggb = self.config.grasp_guess_buffer
             isaac_grasp_data = {
@@ -641,18 +847,29 @@ class GraspingSimulation:
                 "grasps": {
                 }
             }
-            is_success = gsb.is_success.numpy()
-            transforms = gsb.transforms.numpy()
-            pregrasp_transforms = gsb.pregrasp_transforms.numpy()
-            cspace_positions = gsb.cspace_positions.numpy()
-            pregrasp_cspace_positions = gsb.pregrasp_cspace_positions.numpy()
-            bite_points = gsb.bite_points.numpy()
-            pregrasp_bite_points = gsb.pregrasp_bite_points.numpy()
+            if gsb is None:
+                is_success = np.zeros(0, dtype=np.float32)
+                transforms = np.zeros((0, 7), dtype=np.float32)
+                pregrasp_transforms = np.zeros((0, 7), dtype=np.float32)
+                cspace_positions = np.zeros((0, len(self.cspace_joint_names)), dtype=np.float32)
+                pregrasp_cspace_positions = np.zeros((0, len(self.cspace_joint_names)), dtype=np.float32)
+                bite_points = np.zeros((0, 3), dtype=np.float32)
+                pregrasp_bite_points = np.zeros((0, 3), dtype=np.float32)
+                num_grasps = 0
+            else:
+                is_success = gsb.is_success.numpy()
+                transforms = gsb.transforms.numpy()
+                pregrasp_transforms = gsb.pregrasp_transforms.numpy()
+                cspace_positions = gsb.cspace_positions.numpy()
+                pregrasp_cspace_positions = gsb.pregrasp_cspace_positions.numpy()
+                bite_points = gsb.bite_points.numpy()
+                pregrasp_bite_points = gsb.pregrasp_bite_points.numpy()
+                num_grasps = gsb.num_grasps
 
             num_successes = 0
             num_fails = 0
 
-            for i in range(gsb.num_grasps):
+            for i in range(num_grasps):
                 confidence = float(is_success[i])
                 if confidence:
                     num_successes += 1
@@ -803,10 +1020,12 @@ class GraspingSimulation:
 
             # sensors to tell if the object is in grasp
             contact_forces0 = ContactSensorCfg(
-                update_period=0.0, history_length=0, debug_vis=False
+                update_period=0.0, history_length=0, debug_vis=False,
+                filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
             )
             contact_forces1 = ContactSensorCfg(
-                update_period=0.0, history_length=0, debug_vis=False
+                update_period=0.0, history_length=0, debug_vis=False,
+                filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
             )
 
         scene_cfg = GraspingSceneCfg(
@@ -830,10 +1049,14 @@ class GraspingSimulation:
             ),
             activate_contact_sensors=True,
         )
-        # Ensure finger_colliders is a list for type safety
+        # Ensure finger_colliders is a list for type safety. Some USDs put
+        # links under a defaultPrim wrapper, e.g. /Robot/piper_camera/link7.
         finger_colliders_list = list(self.finger_colliders)
-        scene_cfg.contact_forces0.prim_path="{ENV_REGEX_NS}/Robot/" + str(finger_colliders_list[0]) #+ ".*"
-        scene_cfg.contact_forces1.prim_path="{ENV_REGEX_NS}/Robot/" + str(finger_colliders_list[1]) #+ ".*"
+        finger_contact_prim_paths = list(getattr(self.config.grasp_file_args, "finger_contact_prim_paths", []) or [])
+        if len(finger_contact_prim_paths) != 2:
+            finger_contact_prim_paths = [".*" + str(name).strip("/") for name in finger_colliders_list]
+        scene_cfg.contact_forces0.prim_path="{ENV_REGEX_NS}/Robot/" + str(finger_contact_prim_paths[0]).strip("/")
+        scene_cfg.contact_forces1.prim_path="{ENV_REGEX_NS}/Robot/" + str(finger_contact_prim_paths[1]).strip("/")
         return scene_cfg
 
     def get_initial_joint_pos(self, scene, joint_pos, num_envs, start_idx, buff):
@@ -1013,9 +1236,22 @@ class GraspingSimulation:
 
             # Pre-compute world frame force tensors for each direction
             Gs = self.config.force_magnitude
-            _, gravity_mag = sim.get_physics_context().get_gravity()
+            gravity_dir, gravity_mag = sim.get_physics_context().get_gravity()
             acceleration = Gs * gravity_mag
             force_magnitude = acceleration * object.data.default_mass[0]
+            gravity_direction = [float(gravity_dir[0]), float(gravity_dir[1]), float(gravity_dir[2])]
+            gravity_direction_norm = math.sqrt(sum(component * component for component in gravity_direction))
+            if gravity_direction_norm == 0.0:
+                gravity_direction = [0.0, 0.0, -1.0]
+            else:
+                gravity_direction = [component / gravity_direction_norm for component in gravity_direction]
+            gravity_force_magnitude = gravity_mag * object.data.default_mass[0] * self.config.gravity_force_scale
+            gravity_world_force = [
+                gravity_direction[0] * gravity_force_magnitude,
+                gravity_direction[1] * gravity_force_magnitude,
+                gravity_direction[2] * gravity_force_magnitude,
+            ]
+            wp_gravity_world_force = wp.vec3(gravity_world_force[0], gravity_world_force[1], gravity_world_force[2])
 
             # Create force tensors for each sequence
             # TODO Move this to only be done once in validate_grasps, or validate_config?
@@ -1031,6 +1267,8 @@ class GraspingSimulation:
                 force[:, 1] = world_force[1]
                 force[:, 2] = world_force[2]
                 world_forces[i] = force.unsqueeze(1)
+            gravity_hold_seconds = self.config.gravity_hold_seconds if self.config.enable_gravity_after_grasp else 0.0
+            gravity_end_time = force_end_time + gravity_hold_seconds
             # unsqueeze to match force shape (env, 1, 3)
             zero_torque = torch.zeros(num_envs, 3, device=self.config.device).unsqueeze(1)
             wp_world_forces_working = wp.zeros(shape=(num_envs, 1), dtype=wp.vec3, device=self.config.device)
@@ -1156,17 +1394,38 @@ class GraspingSimulation:
                     # Apply force to object (in local frame)
                     object.set_external_force_and_torque(wp.to_torch(wp_world_forces_working,requires_grad=False), zero_torque)
 
-                elif sim_time >= force_end_time and not data_done and not self.config.disable_sim:
+                elif not data_done and sim_time >= force_end_time and sim_time < gravity_end_time and not self.config.disable_sim:
+                    wp.launch(
+                        kernel=world_to_object_force_kernel,
+                        dim=num_envs,
+                        inputs=[object.data.root_quat_w, wp_gravity_world_force, wp_world_forces_working],
+                        device=self.config.device)
+
+                    object.set_external_force_and_torque(wp.to_torch(wp_world_forces_working, requires_grad=False), zero_torque)
+
+                elif sim_time >= gravity_end_time and not data_done and not self.config.disable_sim:
                     times_to_print["while_loop"] = time.time() - while_start_time
                     write_data_time = time.time()
                     cdata0 = contact_forces0.data
                     cdata1 = contact_forces1.data
-                    # Check if all finger tips have non-zero normal forces
-                    non_zero_forces0 = torch.all(torch.norm(cdata0.net_forces_w, dim=-1) > 0, dim=1)
-                    non_zero_forces1 = torch.all(torch.norm(cdata1.net_forces_w, dim=-1) > 0, dim=1)
+                    # Check if both fingers still have non-zero normal forces against the object.
+                    contact_force_threshold = self.config.contact_force_threshold
+                    non_zero_forces0 = torch.any(torch.norm(cdata0.force_matrix_w, dim=-1) > contact_force_threshold, dim=(1, 2))
+                    non_zero_forces1 = torch.any(torch.norm(cdata1.force_matrix_w, dim=-1) > contact_force_threshold, dim=(1, 2))
 
                     # This is an output
-                    non_zero_forces = non_zero_forces0 & non_zero_forces1
+                    no_interpenetration = self.compute_no_interpenetration(object, gripper, num_envs)
+                    non_zero_forces = non_zero_forces0 & non_zero_forces1 & no_interpenetration
+                    if self.config.debug_validation_stats:
+                        both_contacts = non_zero_forces0 & non_zero_forces1
+                        print(
+                            "\nvalidation stats: "
+                            f"finger0_contact={int(non_zero_forces0.sum().item())}/{num_envs}, "
+                            f"finger1_contact={int(non_zero_forces1.sum().item())}/{num_envs}, "
+                            f"both_contacts={int(both_contacts.sum().item())}/{num_envs}, "
+                            f"no_interpenetration={int(no_interpenetration.sum().item())}/{num_envs}, "
+                            f"success={int(non_zero_forces.sum().item())}/{num_envs}"
+                        )
                     wp.launch(
                         kernel=set_is_success_kernel,
                         dim=num_envs,
@@ -1204,9 +1463,16 @@ class GraspingSimulation:
                     # we want to keep simming if the UI is open so the UI does not freeze
                     data_done = True
                     if do_render and self.force_headed:
-                        print_purple(f"In {__file__}, waiting for Isaac Lab to close...", flush=True)
+                        hold_seconds = self.config.headed_hold_seconds
+                        if hold_seconds < 0.0:
+                            print_purple(f"In {__file__}, waiting for Isaac Lab to close...", flush=True)
+                        else:
+                            print_purple(f"In {__file__}, rendering headed batch for {hold_seconds:.2f}s...", flush=True)
 
+                        hold_start = time.time()
                         while simulation_app.is_running():
+                            if hold_seconds >= 0.0 and time.time() - hold_start >= hold_seconds:
+                                break
                             sim.step(render=do_render)
 
                     print("\033[0m", end="")
@@ -1225,8 +1491,8 @@ class GraspingSimulation:
                 if not data_done and int(current_time) > int(wall_time):
                     # Show simulation timing with batch info, overwriting the previous line cleanly
                     if batch_count is not None and total_batches is not None:
-                        # Calculate percentage: (sim_time / force_end_time) * 100
-                        percentage = int((sim_time / force_end_time) * 100) if force_end_time > 0 else 0
+                        # Calculate percentage over grasp, disturbance, and gravity-hold phases.
+                        percentage = int((sim_time / gravity_end_time) * 100) if gravity_end_time > 0 else 0
                         # Pad single-digit percentages to keep "Sim:" aligned
                         percentage_str = f" {percentage}%" if percentage < 10 else f"{percentage}%"
                         # Clear the line completely and print fresh to avoid leftover characters
@@ -1243,7 +1509,14 @@ def main(args):
                  max_num_envs = args.max_num_envs, env_spacing = args.env_spacing, fps = args.fps, force_magnitude = args.force_magnitude, initial_grasp_duration = args.initial_grasp_duration, tug_sequences = args.tug_sequences,
                  start_with_pregrasp_cspace_position = args.start_with_pregrasp_cspace_position, open_limit = args.open_limit,
                  disable_sim = args.disable_sim, record_pvd = args.record_pvd, debug_single_index = args.debug_single_index,
-                 output_failed_grasp_locations = args.output_failed_grasp_locations, flip_input_grasps = args.flip_input_grasps, enable_ccd = args.enable_ccd, device=args.device, max_num_grasps=args.max_num_grasps, grasp_file= args.grasp_file, grasp_file_args=args)
+                 output_failed_grasp_locations = args.output_failed_grasp_locations, flip_input_grasps = args.flip_input_grasps, enable_ccd = args.enable_ccd,
+                 enable_gravity_after_grasp=args.enable_gravity_after_grasp, gravity_hold_seconds=args.gravity_hold_seconds,
+                 gravity_force_scale=args.gravity_force_scale, contact_force_threshold=args.contact_force_threshold,
+                 headed_hold_seconds=args.headed_hold_seconds,
+                 reject_interpenetration=args.reject_interpenetration,
+                 reject_finger_interpenetration=args.reject_finger_interpenetration,
+                 debug_validation_stats=args.debug_validation_stats,
+                 device=args.device, max_num_grasps=args.max_num_grasps, grasp_file= args.grasp_file, grasp_file_args=args)
     grasp_sim = GraspingSimulation(grasp_sim_cfg, force_headed=args.force_headed, wait_for_debugger_attach=args.wait_for_debugger_attach)
     grasp_sim_buffer = grasp_sim.validate_grasps()
     save_to_folder = os.path.join(os.environ.get('GRASP_DATASET_DIR', ''), "grasp_sim_data")

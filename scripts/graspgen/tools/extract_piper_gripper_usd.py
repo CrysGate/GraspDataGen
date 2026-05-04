@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 from typing import Iterable
 
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 
 DEFAULT_SOURCE = "piper_isaac_sim/USD/piper_v2.usd"
@@ -336,6 +336,14 @@ def remove_api_schema(prim: Usd.Prim, schema_name: str) -> None:
     prim.SetMetadata("apiSchemas", Sdf.TokenListOp.CreateExplicit(explicit_items))
 
 
+def add_api_schema(prim: Usd.Prim, schema_name: str) -> None:
+    api_schemas = prim.GetMetadata("apiSchemas")
+    explicit_items = list(api_schemas.GetAddedOrExplicitItems()) if api_schemas else []
+    if schema_name not in explicit_items:
+        explicit_items.append(schema_name)
+    prim.SetMetadata("apiSchemas", Sdf.TokenListOp.CreateExplicit(explicit_items))
+
+
 def set_common_xform_from_matrix(prim: Usd.Prim, matrix: Gf.Matrix4d) -> None:
     """Author a simple translate/orient/scale xform from a composed matrix."""
 
@@ -454,7 +462,7 @@ def configure_mimic_finger_pair(
     stage: Usd.Stage,
     root_path: str,
     finger_joints: list[str],
-    mimic_axis: str = "rotZ",
+    mimic_axis: str | None = None,
     gearing: float = 1.0,
 ) -> list[str]:
     """Make the first finger joint active and the second a PhysX mimic follower."""
@@ -467,6 +475,13 @@ def configure_mimic_finger_pair(
     follower = stage.GetPrimAtPath(f"{root_path}/joints/{finger_joints[1]}")
     if not active or not follower:
         return [f"WARNING: missing active/follower joint for mimic setup: {finger_joints}"]
+
+    if mimic_axis is None:
+        axis_attr = follower.GetAttribute("physics:axis")
+        axis = str(axis_attr.Get() if axis_attr else "Z").upper()
+        if axis not in {"X", "Y", "Z"}:
+            axis = "Z"
+        mimic_axis = f"rot{axis}"
 
     drive_names = [
         "drive:linear:physics:stiffness",
@@ -491,14 +506,22 @@ def configure_mimic_finger_pair(
                 if not target_attr:
                     target_attr = active.CreateAttribute(name, source_attr.GetTypeName())
                 target_attr.Set(source_attr.Get())
-        active.SetMetadata("apiSchemas", Sdf.TokenListOp.CreateExplicit(["PhysicsJointStateAPI:linear", "PhysxJointAPI", "PhysicsDriveAPI:linear"]))
+        add_api_schema(active, "PhysicsDriveAPI:linear")
         notes.append(f"Copied non-zero drive parameters from follower {finger_joints[1]} to active {finger_joints[0]}")
 
     for name in drive_names:
         remove_property_if_present(follower, name)
     remove_api_schema(follower, "PhysicsDriveAPI:linear")
+    for prop in list(follower.GetProperties()):
+        if prop.GetName().startswith("physxMimicJoint:"):
+            follower.RemoveProperty(prop.GetName())
+    api_schemas = follower.GetMetadata("apiSchemas")
+    explicit_items = list(api_schemas.GetAddedOrExplicitItems()) if api_schemas else []
+    explicit_items = [item for item in explicit_items if not item.startswith("PhysxMimicJointAPI:")]
+    follower.SetMetadata("apiSchemas", Sdf.TokenListOp.CreateExplicit(explicit_items))
 
     mimic_prefix = f"physxMimicJoint:{mimic_axis}"
+    add_api_schema(follower, f"PhysxMimicJointAPI:{mimic_axis}")
     set_relationship_targets(follower, f"{mimic_prefix}:referenceJoint", [str(active.GetPath())])
     set_float_attr(follower, f"{mimic_prefix}:gearing", gearing)
     set_float_attr(follower, f"{mimic_prefix}:offset", 0.0)
@@ -511,7 +534,135 @@ def configure_mimic_finger_pair(
     return notes
 
 
-def apply_collision_api_to_mesh_parents(stage: Usd.Stage, collision_root_path: str) -> list[str]:
+def copy_finger_drive_parameters(
+    source_stage: Usd.Stage,
+    output_stage: Usd.Stage,
+    source_root_path: str,
+    output_root_path: str,
+    finger_joints: list[str],
+) -> list[str]:
+    """Copy composed wrapper drive strengths onto the active extracted joint."""
+
+    notes: list[str] = []
+    drive_names = [
+        "drive:linear:physics:stiffness",
+        "drive:linear:physics:damping",
+        "drive:linear:physics:maxForce",
+        "drive:linear:physics:targetPosition",
+        "drive:linear:physics:targetVelocity",
+        "drive:linear:physics:type",
+    ]
+
+    active_name = finger_joints[0]
+    output_joint = output_stage.GetPrimAtPath(f"{output_root_path}/joints/{active_name}")
+    if not output_joint:
+        return notes
+
+    source_joint = None
+    for joint_name in finger_joints:
+        candidate = source_stage.GetPrimAtPath(f"{source_root_path}/joints/{joint_name}")
+        if not candidate:
+            continue
+        stiffness_attr = candidate.GetAttribute("drive:linear:physics:stiffness")
+        stiffness = stiffness_attr.Get() if stiffness_attr else None
+        if stiffness is not None and float(stiffness) != 0.0:
+            source_joint = candidate
+            break
+        if source_joint is None:
+            source_joint = candidate
+
+    if not source_joint:
+        return notes
+
+    copied: list[str] = []
+    for attr_name in drive_names:
+        source_attr = source_joint.GetAttribute(attr_name)
+        if not source_attr:
+            continue
+        source_value = source_attr.Get()
+        if source_value is None:
+            continue
+        output_attr = output_joint.GetAttribute(attr_name)
+        if not output_attr:
+            output_attr = output_joint.CreateAttribute(attr_name, source_attr.GetTypeName())
+        output_attr.Set(source_value)
+        copied.append(attr_name)
+
+    if copied:
+        add_api_schema(output_joint, "PhysicsDriveAPI:linear")
+        notes.append(f"Copied composed drive parameters from {source_joint.GetName()} to active {active_name}")
+
+    stiffness_attr = output_joint.GetAttribute("drive:linear:physics:stiffness")
+    damping_attr = output_joint.GetAttribute("drive:linear:physics:damping")
+    stiffness = stiffness_attr.Get() if stiffness_attr else None
+    if stiffness is not None and float(stiffness) < 4000.0:
+        stiffness_attr.Set(4000.0)
+        if damping_attr:
+            damping_attr.Set(400.0)
+        notes.append(f"Raised active drive on {active_name} to stiffness=4000.0 damping=400.0")
+
+    max_force_attr = output_joint.GetAttribute("drive:linear:physics:maxForce")
+    max_force = max_force_attr.Get() if max_force_attr else None
+    if max_force_attr and max_force is not None and float(max_force) < 1000.0:
+        max_force_attr.Set(1000.0)
+        notes.append(f"Raised active drive maxForce on {active_name} to 1000.0")
+
+    target_position_attr = output_joint.GetAttribute("drive:linear:physics:targetPosition")
+    if target_position_attr:
+        target_position_attr.Set(0.0)
+    target_velocity_attr = output_joint.GetAttribute("drive:linear:physics:targetVelocity")
+    if target_velocity_attr:
+        target_velocity_attr.Set(0.0)
+
+    return notes
+
+
+def repair_zero_mass_fingers(stage: Usd.Stage, root_path: str, finger_links: list[str]) -> list[str]:
+    """Replace zero-mass finger bodies with another finger's non-zero inertia."""
+
+    notes: list[str] = []
+    mass_attrs = [
+        "physics:mass",
+        "physics:density",
+        "physics:diagonalInertia",
+        "physics:principalAxes",
+    ]
+
+    reference = None
+    for link_name in finger_links:
+        prim = stage.GetPrimAtPath(f"{root_path}/{link_name}")
+        mass_attr = prim.GetAttribute("physics:mass") if prim else None
+        mass = mass_attr.Get() if mass_attr else None
+        if mass is not None and float(mass) > 0.0:
+            reference = prim
+            break
+
+    if reference is None:
+        return notes
+
+    for link_name in finger_links:
+        prim = stage.GetPrimAtPath(f"{root_path}/{link_name}")
+        if not prim:
+            continue
+        mass_attr = prim.GetAttribute("physics:mass")
+        mass = mass_attr.Get() if mass_attr else None
+        if mass is None or float(mass) > 0.0:
+            continue
+
+        for attr_name in mass_attrs:
+            source_attr = reference.GetAttribute(attr_name)
+            target_attr = prim.GetAttribute(attr_name)
+            if source_attr and target_attr:
+                target_attr.Set(source_attr.Get())
+        center_of_mass = prim.GetAttribute("physics:centerOfMass")
+        if center_of_mass:
+            center_of_mass.Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        notes.append(f"Repaired zero mass/inertia on {link_name} using {reference.GetName()} as reference")
+
+    return notes
+
+
+def apply_collision_api_to_mesh_prims(stage: Usd.Stage, collision_root_path: str) -> list[str]:
     notes: list[str] = []
     root = stage.GetPrimAtPath(collision_root_path)
     if not root:
@@ -523,18 +674,48 @@ def apply_collision_api_to_mesh_parents(stage: Usd.Stage, collision_root_path: s
     set_token_attr(root, "physics:approximation", "convexDecomposition")
 
     for mesh in list(iter_mesh_prims(stage, collision_root_path)):
-        parent = mesh.GetParent()
-        if not parent or parent == root:
-            parent = mesh
-
-        UsdPhysics.CollisionAPI.Apply(parent)
-        UsdPhysics.MeshCollisionAPI.Apply(parent)
-        parent.GetAttribute("physics:collisionEnabled").Set(True)
-        set_token_attr(parent, "physics:approximation", "convexDecomposition")
+        # Isaac/PhysX contact generation is most reliable when the collision
+        # schema is authored on the actual geometry prim. The bundled Robotiq
+        # USD follows this pattern; parent-only Xform colliders can load as
+        # non-contacting geometry in GraspDataGen validation.
+        UsdPhysics.CollisionAPI.Apply(mesh)
+        UsdPhysics.MeshCollisionAPI.Apply(mesh)
+        mesh.GetAttribute("physics:collisionEnabled").Set(True)
+        set_token_attr(mesh, "physics:approximation", "convexDecomposition")
 
         counts = mesh.GetAttribute("faceVertexCounts").Get()
         if counts is not None and not all(count == 3 for count in counts):
             notes.append(f"WARNING: non-triangular mesh remains at {mesh.GetPath()}")
+    return notes
+
+
+def bind_contact_material(
+    stage: Usd.Stage,
+    root_path: str,
+    link_names: list[str],
+    static_friction: float = 3.0,
+    dynamic_friction: float = 3.0,
+) -> list[str]:
+    """Bind a high-friction physics material to gripper links."""
+
+    material_path = f"{root_path}/physicsMaterial"
+    material = UsdShade.Material.Define(stage, material_path)
+    physics_material = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+    physics_material.CreateStaticFrictionAttr().Set(static_friction)
+    physics_material.CreateDynamicFrictionAttr().Set(dynamic_friction)
+    physics_material.CreateRestitutionAttr().Set(0.0)
+
+    notes: list[str] = []
+    for link_name in link_names:
+        prim = stage.GetPrimAtPath(f"{root_path}/{link_name}")
+        if not prim:
+            notes.append(f"WARNING: could not bind contact material, missing {root_path}/{link_name}")
+            continue
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
+    notes.append(
+        f"Bound high-friction physics material to {', '.join(link_names)} "
+        f"(static={static_friction}, dynamic={dynamic_friction})"
+    )
     return notes
 
 
@@ -576,7 +757,7 @@ def copy_link_visuals_and_collisions(
     else:
         notes.append(f"WARNING: missing collision source {src_collision}")
 
-    notes.extend(apply_collision_api_to_mesh_parents(stage, collision_dst))
+    notes.extend(apply_collision_api_to_mesh_prims(stage, collision_dst))
     return notes
 
 
@@ -652,6 +833,7 @@ def extract_gripper(
     for link_name in [base_link, *finger_links]:
         use_visual_as_collision = link_name == base_link and base_collision_source == "visuals"
         notes.extend(copy_link_visuals_and_collisions(flat_layer, stage, root_path, link_name, use_visual_as_collision))
+    notes.extend(bind_contact_material(stage, root_path, finger_links))
 
     notes.extend(normalize_finger_joint_limits(stage, root_path, finger_joints, normalize_mode))
     notes.extend(configure_mimic_finger_pair(stage, root_path, finger_joints))
@@ -811,6 +993,18 @@ def process_one(
     )
 
     output_stage = open_stage(output)
+    extraction_notes.extend(
+        copy_finger_drive_parameters(
+            source_stage=original_stage,
+            output_stage=output_stage,
+            source_root_path=source_root_path,
+            output_root_path=root_path,
+            finger_joints=finger_joints,
+        )
+    )
+    extraction_notes.extend(repair_zero_mass_fingers(output_stage, root_path, finger_links))
+    output_stage.GetRootLayer().Save()
+
     output_summary = write_stage_report(output_stage, report_dir / "gripper_output_structure.txt", include_large_arrays)
     output_external_arcs = count_external_arcs(output_stage)
     collision_meshes = output_mesh_summary(output_stage, root_path, [base_link, *finger_links])
@@ -911,8 +1105,8 @@ def main() -> None:
     parser.add_argument(
         "--normalize-finger-joints",
         choices=["positive", "none"],
-        default="positive",
-        help="Normalize negative finger joint ranges to positive ranges. Default: positive.",
+        default="none",
+        help="Normalize negative finger joint ranges to positive ranges. Default: none, preserving Piper joint8's negative follower range for PhysX mimic.",
     )
     parser.add_argument(
         "--base-collision-source",

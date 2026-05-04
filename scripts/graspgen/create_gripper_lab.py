@@ -186,7 +186,10 @@ class GripperCreator:
             print_red(f"Warning: Bite is greater than the {['x','y','z'][approach_axis]} axis of the finger, bite: {self.config.bite}, approach axis range: {t_max[approach_axis] - t_min[approach_axis]}")
         bite_point[approach_axis] = t_max[approach_axis] - self.config.bite
         bite_point[open_axis] = t_max[open_axis]
-        bite_point[mid_axis] = t_min[mid_axis] + 0.5*(t_max[mid_axis]-t_min[mid_axis])
+        if self.config.bite_mid_axis_position is None:
+            bite_point[mid_axis] = t_min[mid_axis] + 0.5*(t_max[mid_axis]-t_min[mid_axis])
+        else:
+            bite_point[mid_axis] = self.config.bite_mid_axis_position
         # do I need to worry about the approach axis being negative?
         return bite_point
 
@@ -213,11 +216,17 @@ class GripperCreator:
             tool_pos = 0.5*wp.vec3f(gripper.data.body_com_pos_w[0, finger_idxs[1]] + gripper.data.body_com_pos_w[0, finger_idxs[0]])
         # delta is now finger1 - finger0 position in the open limit.  The largest delta is the open_axis.
         open_axis = int(wp.argmax(wp.abs(delta)))
+        if getattr(self.config, "open_axis", -1) >= 0:
+            open_axis = int(self.config.open_axis)
         if delta[open_axis] < 0.0:
             finger_idxs = finger_idxs[::-1]
         approach_delta = tool_pos - wp.vec3f(gripper.data.body_com_pos_w[0, gripper.body_names.index(self.config.base_frame)])
         approach_delta[open_axis] = 0.0
         approach_axis = int(wp.argmax(wp.abs(approach_delta)))
+        if getattr(self.config, "approach_axis", -1) >= 0:
+            approach_axis = int(self.config.approach_axis)
+        if approach_axis == open_axis:
+            raise ValueError(f"approach_axis and open_axis must differ, got {approach_axis}")
         mid_axis = 3 - approach_axis - open_axis
         # MTC TODO if the approach axis delta is negative, then we use negaive normals when moving away form the object?
         return open_limit, approach_axis, open_axis, mid_axis, finger_idxs
@@ -514,5 +523,16 @@ if __name__ == "__main__":
         open_configuration = open_configuration_string_to_dict(open_configuration)
     device=args_cli.device
 
-    config = GripperConfig(gripper_file, finger_colliders, base_frame, bite, pinch_width_resolution, open_configuration, device)
+    config = GripperConfig(
+        gripper_file,
+        finger_colliders,
+        base_frame,
+        bite,
+        pinch_width_resolution,
+        open_configuration,
+        device,
+        getattr(args_cli, "approach_axis", -1),
+        getattr(args_cli, "open_axis", -1),
+        getattr(args_cli, "bite_mid_axis_position", None),
+    )
     create_gripper_with_lab(config, save_gripper=True, measure_convergence=args_cli.measure_convergence, convergence_iterations=args_cli.convergence_iterations, wait_for_debugger_attach=getattr(args_cli, 'wait_for_debugger_attach', False))
