@@ -4,6 +4,7 @@ grasp_guess_data/
 grasp_sim_data/
 debug_collision_meshes/
 
+robot_usds/
 datagen_sim_data/
 piper_isaac_sim/
 # Byte-compiled / optimized / DLL files
