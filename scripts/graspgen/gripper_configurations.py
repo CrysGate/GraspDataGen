@@ -79,7 +79,7 @@ GRIPPER_CONFIGS = {
         'gripper_file': 'bots/piper_v2_gripper.usd',
         'finger_colliders': ['link7', 'link8'],
         'base_frame': 'link6',
-        'bite': 0.05,
+        'bite': 0.02,
         'pinch_width_resolution': 8,
     },
     'piper_x_v1_gripper': {
