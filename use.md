@@ -1,5 +1,5 @@
 uv run scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/robotiq_2f_85/banana.0.75.yaml \
+      --grasp_file datagen_sim_data/piper_v2_gripper/banana.0.75.yaml \
       --object_file objects/banana.obj \
       --object_scale 0.75 \
       --max_num_envs 256 \
@@ -18,11 +18,11 @@ python scripts/graspgen/datagen.py \
     --max_num_envs 512
 
 python scripts/graspgen/datagen.py \
-    --gripper_config franka_panda \
+    --gripper_config piper_v2_gripper \
     --object_scales_json objects/datagen_example.json \
     --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 256
+    --num_grasps 2048 \
+    --max_num_envs 512
 
 uv run scripts/graspgen/grasp_sim.py \
       --grasp_file datagen_sim_data/robotiq_2f_85/banana.0.75.yaml \
