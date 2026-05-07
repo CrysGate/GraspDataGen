@@ -48,6 +48,13 @@ GRIPPER_CONFIGS = {
         'finger_colliders': ['panda_rightfinger', 'panda_leftfinger'],
         'base_frame': 'panda_hand',
     },
+    'piper_v2_gripper': {
+        'gripper_file': 'bots/piper_v2_gripper.usd',
+        'finger_colliders': ['link7', 'link8'],
+        'base_frame': 'link6',
+        'bite': 0.02,
+        'pinch_width_resolution': 8,
+    },
 }
 
 
