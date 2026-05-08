@@ -26,12 +26,6 @@ from graspgen_utils import print_blue
 
 # Gripper configurations dictionary
 GRIPPER_CONFIGS = {
-    'intrinsic': {
-        'gripper_file': 'bots/intrinsic_pinch_gripper_prismatic_flip.usd',
-        'finger_colliders': ['finger_link', 'mount_link'],
-        'base_frame': 'mount_link',
-        'bite': 0.02,
-    },
     'robotiq_2f_85': {
         'gripper_file': 'bots/robotiq_2f_85.usd',
         'finger_colliders': ['right_inner_finger', 'left_inner_finger'],
@@ -61,14 +55,14 @@ GRIPPER_CONFIGS = {
 def get_gripper_config(gripper_type):
     """
     Get gripper configuration based on gripper type string.
-    
+
     Args:
         gripper_type (str): One of the predefined gripper types
-        
+
     Returns:
         dict: Dictionary containing parameter overrides for the specified
         gripper type
-        
+
     Raises:
         ValueError: If gripper_type is not found in configurations
     """
@@ -76,14 +70,14 @@ def get_gripper_config(gripper_type):
         available = list(GRIPPER_CONFIGS.keys())
         raise ValueError(f"Unknown gripper type: {gripper_type}. "
                         f"Must be one of: {available}")
-    
+
     return GRIPPER_CONFIGS[gripper_type]
 
 def apply_gripper_config_to_args(args, gripper_config):
     """
     Apply gripper configuration overrides to the args object.
     Only overrides values that weren't explicitly provided on the command line.
-    
+
     Args:
         args: The parsed arguments object
         gripper_config: Dictionary of parameter overrides
@@ -103,7 +97,7 @@ def apply_gripper_config_to_args(args, gripper_config):
                         continue
                 except ValueError:
                     pass  # Flag not found, continue with override
-            
+
             setattr(args, param_name, value)
             print_blue(f"  Overriding {param_name}: {value}")
         else:
@@ -115,8 +109,8 @@ def apply_gripper_config_to_args(args, gripper_config):
 def list_available_grippers():
     """
     List all available gripper configurations.
-    
+
     Returns:
         list: List of available gripper type names
     """
-    return list(GRIPPER_CONFIGS.keys()) 
+    return list(GRIPPER_CONFIGS.keys())
