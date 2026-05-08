@@ -52,25 +52,27 @@ Document the suspected branch, evidence, and next action in `TODO.md`.
 
 Approach fixes cautiously. Gather enough local context, rely on verifiable information, reproduce or validate the issue when practical, and identify the root cause before editing code. Do not patch from guesses. After the root cause is clear, make the smallest effective fix; avoid broad rewrites, large helper layers, or speculative code. When a bug touches a specific gripper, inspect the USD internals and the generated gripper definition first; do not rely only on wrapper configs or previous assumptions. Read the USD prim hierarchy and per-prim settings directly, including rigid bodies, joints, drives, mass, friction/material bindings, collision APIs, collider approximations, finger collider paths, base frame placement, open-limit semantics, and joint limits. Do not assume one gripper's parameters transfer to another. In grasp generation, verify that the pregrasp/open state is the widest valid opening and that the grasp state moves toward the closed limit. When changing behavior, first trace the impact through `scripts/graspgen/datagen.py`, `scripts/graspgen/grasp_sim.py`, and files they import. Preserve their CLI compatibility and output conventions unless the request explicitly changes them.
 
-## Build, Test, and Development Commands
+## Generate and Validate
 
-- `uv run python scripts/graspgen/grasp_guess.py --gripper_config robotiq_2f_85`: smoke-tests grasp guess generation on the default object.
-- `uv run python scripts/graspgen/grasp_sim.py --grasp_file grasp_guess_data/robotiq_2f_85/mug.yaml --max_num_grasps 16`: smoke-tests grasp validation.
-- `uv run python scripts/graspgen/datagen.py --gripper_config onrobot_rg6 --object_scales_json objects/datagen_example.json --object_root objects`: runs the batch pipeline locally when IsaacLab is available.
-- `uv run python scripts/graspgen/tools/visualize_grasp_data.py --grasp-paths grasp_sim_data/robotiq_2f_85/mug.yaml`: inspects generated grasp data when Meshcat is available.
+- `uv run python scripts/graspgen/datagen.py \
+    --gripper_config robotiq_2f_85 \
+    --object_scales_json objects/datagen_example.json \
+    --object_root objects \
+    --num_grasps 1024 \
+    --max_num_envs 256`: runs the batch pipeline locally.
 
-## Coding Style & Naming Conventions
+- `uv run scripts/graspgen/grasp_sim.py \
+      --grasp_file datagen_sim_data/robotiq_2f_85/banana.0.75.yaml \
+      --object_file objects/banana.obj \
+      --object_scale 0.75 \
+      --max_num_envs 256 \
+      --max_num_grasps 1024 \
+      --force_headed`: validation.
 
-Python is the primary language. Follow the existing script style: 4-space indentation, snake_case functions and variables, descriptive CLI option names, and uppercase constants such as `GRIPPER_CONFIGS`. Keep SPDX copyright and Apache-2.0 headers on source files that already use them. Use `flake8` with the repository settings in `.flake8` (`max-line-length = 180`, ignores `E203` and `W503`).
-
-## Testing Guidelines
-
-There is no dedicated test suite in this checkout. Validate changes with focused `uv run python ...` smoke runs for the affected workflow and document any commands used. Prefer small `--max_num_grasps` values for simulation checks. For visualization-only changes, use `uv run python scripts/graspgen/tools/visualize_grasp_data.py` with sample data.
-
-## Commit & Pull Request Guidelines
+## Commit
 
 The current history uses short, imperative summaries such as `fix gripper usd generation` and `add piper usd`. Keep commits focused and mention the affected component when useful. Include a clear description, reproduction or validation commands, and any generated asset/data changes.
 
 ## Configuration Tips
 
-Do not commit generated datasets, local virtual environments, or private object assets. Use `GRASP_DATASET_DIR` and `OBJECT_DATASET_DIR` to direct outputs away from the source tree when running large jobs.
+Do not commit generated datasets, local virtual environments, or private object assets.
