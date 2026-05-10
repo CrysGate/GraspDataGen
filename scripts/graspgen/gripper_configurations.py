@@ -120,6 +120,41 @@ GRIPPER_CONFIGS = {
         'bite': 0.0185,
         'pinch_width_resolution': 8,
     },
+    'robot_g1_120s_gripper': {
+        'gripper_file': 'bots/robot_g1_120s_gripper.usd',
+        'finger_colliders': ['gripper_r_inner_link5', 'gripper_r_outer_link5'],
+        'base_frame': 'gripper_r_base_link',
+        'bite': 0.018,
+        'pinch_width_resolution': 8,
+    },
+    'robot_g1_omnipicker_gripper': {
+        'gripper_file': 'bots/robot_g1_omnipicker_gripper.usd',
+        'finger_colliders': ['gripper_r_inner_link2', 'gripper_r_outer_link4'],
+        'base_frame': 'gripper_r_base_link',
+        'bite': 0.016,
+        'pinch_width_resolution': 8,
+    },
+    'robot_g2_90d_gripper': {
+        'gripper_file': 'bots/robot_g2_90d_gripper.usd',
+        'finger_colliders': ['gripper_r_left_support_link', 'gripper_r_right_support_link'],
+        'base_frame': 'gripper_r_base_link',
+        'bite': 0.018,
+        'pinch_width_resolution': 8,
+    },
+    'robot_g2_omnipicker_gripper': {
+        'gripper_file': 'bots/robot_g2_omnipicker_gripper.usd',
+        'finger_colliders': ['gripper_r_inner_link2', 'gripper_r_outer_link4'],
+        'base_frame': 'gripper_r_base_link',
+        'bite': 0.016,
+        'pinch_width_resolution': 8,
+    },
+    'robot_g2_place_workpiece_gripper': {
+        'gripper_file': 'bots/robot_g2_place_workpiece_gripper.usd',
+        'finger_colliders': ['gripper_r_inner_link1', 'gripper_r_outer_link1'],
+        'base_frame': 'gripper_r_base_link',
+        'bite': 0.012,
+        'pinch_width_resolution': 8,
+    },
 }
 
 
