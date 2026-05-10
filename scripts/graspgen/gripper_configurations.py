@@ -106,13 +106,6 @@ GRIPPER_CONFIGS = {
         'bite': 0.012,
         'pinch_width_resolution': 8,
     },
-    'jodell_rg75': {
-        'gripper_file': 'bots/jodell_rg75.usd',
-        'finger_colliders': ['left_finger', 'right_finger'],
-        'base_frame': 'flange',
-        'bite': 0.018,
-        'pinch_width_resolution': 8,
-    },
     'omnipicker': {
         'gripper_file': 'bots/omnipicker.usd',
         'finger_colliders': ['narrow3_Link', 'wide3_Link'],
