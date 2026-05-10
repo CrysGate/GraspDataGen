@@ -237,14 +237,16 @@ class GraspGuessBuffer:
 
     def create_isaac_grasp_data(self, save_successes = True, save_fails = True, only_driven_joints = True, save_to_folder = None, file_name_prefix = "", file_extension_prefix = ""):
         #return None
-        succ_transforms = self.succ_buff.transforms.numpy()[:self.num_successes] if save_successes else None
-        succ_offsets = self.succ_buff.offsets.numpy()[:self.num_successes] if save_successes else None
-        succ_pregrasp_offsets = self.succ_buff.pregrasp_offsets.numpy()[:self.num_successes] if save_successes else None
-        succ_idx_map = self.succ_buff.idx_map.numpy()[:self.num_successes] if save_successes else None
-        fail_transforms = self.fail_buff.transforms.numpy()[:self.num_fails] if save_fails else None
-        fail_offsets = self.fail_buff.offsets.numpy()[:self.num_fails] if save_fails else None
-        fail_pregrasp_offsets = self.fail_buff.pregrasp_offsets.numpy()[:self.num_fails] if save_fails else None
-        fail_idx_map = self.fail_buff.idx_map.numpy()[:self.num_fails] if save_fails else None
+        has_successes = save_successes and self.succ_buff is not None and self.num_successes > 0
+        has_fails = save_fails and self.fail_buff is not None and self.num_fails > 0
+        succ_transforms = self.succ_buff.transforms.numpy()[:self.num_successes] if has_successes else None
+        succ_offsets = self.succ_buff.offsets.numpy()[:self.num_successes] if has_successes else None
+        succ_pregrasp_offsets = self.succ_buff.pregrasp_offsets.numpy()[:self.num_successes] if has_successes else None
+        succ_idx_map = self.succ_buff.idx_map.numpy()[:self.num_successes] if has_successes else None
+        fail_transforms = self.fail_buff.transforms.numpy()[:self.num_fails] if has_fails else None
+        fail_offsets = self.fail_buff.offsets.numpy()[:self.num_fails] if has_fails else None
+        fail_pregrasp_offsets = self.fail_buff.pregrasp_offsets.numpy()[:self.num_fails] if has_fails else None
+        fail_idx_map = self.fail_buff.idx_map.numpy()[:self.num_fails] if has_fails else None
 
         object_scale = self.object.config.object_scale
 
@@ -301,9 +303,9 @@ class GraspGuessBuffer:
                         grasps[grasp_key]["cspace_position"][str(joint_name)] = float(cspace_pos)
                         grasps[grasp_key]["pregrasp_cspace_position"][str(joint_name)] = float(pregrasp_cspace_pos)
 
-        if save_successes:
+        if has_successes:
             create_isaac_grasp_grasps(isaac_grasp_data, succ_transforms, succ_offsets, succ_pregrasp_offsets, succ_idx_map, only_driven_joints, are_successes=True, at_idx=0)
-        if save_fails:
+        if has_fails:
             at_idx = self.num_successes if save_successes else 0
             create_isaac_grasp_grasps(isaac_grasp_data, fail_transforms, fail_offsets, fail_pregrasp_offsets, fail_idx_map, only_driven_joints, are_successes=False, at_idx=at_idx)
 
