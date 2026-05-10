@@ -36,6 +36,7 @@ GRIPPER_CONFIGS = {
         'gripper_file': 'bots/onrobot_rg6.usd',
         'finger_colliders': ['right_inner_finger', 'left_inner_finger'],
         'base_frame': 'base_frame',
+        'bite': 0.025,
     },
     'franka_panda': {
         'gripper_file': 'bots/franka_panda.usd',
