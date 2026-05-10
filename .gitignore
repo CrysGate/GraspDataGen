@@ -126,6 +126,10 @@ ipython_config.py
 .pdm-build/
 
 *.npz
+objects/handwheel.usd
+objects/plate.usd
+objects/banan.usd
+objects/mug.usd
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/
 
