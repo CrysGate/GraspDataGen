@@ -780,7 +780,7 @@ def set_is_success_kernel(
 
 
 @wp.kernel
-def get_joint_pos_kernel(
+def set_joint_pos_from_cspace_kernel(
     src_start_idx: wp.int32,
     dst_start_idx: wp.int32,
     cspace_values: wp.array2d(dtype=wp.float32),
@@ -792,7 +792,7 @@ def get_joint_pos_kernel(
     joint_pos[dst_start_idx+env_id, joint_idx] = cspace_values[env_id+src_start_idx, j_idx]
 
 @wp.kernel
-def get_joint_pos_kernel(
+def get_cspace_from_joint_pos_kernel(
     src_start_idx: wp.int32,
     dst_start_idx: wp.int32,
     in_joint_pos: wp.array2d(dtype=wp.float32),
@@ -955,13 +955,13 @@ def ingest_grasp_guess_data_kernel(
 def get_cspace_positions_kernel(
     offsets: wp.array(dtype=wp.int32), # num_grasps
     cspace_joint_indices: wp.array(dtype=wp.int32), # num_cspace_joint_names
-    joint_cspace_pos: wp.array2d(dtype=wp.float32), # num_grasps x num_cspace_joints
+    joint_cspace_pos: wp.array2d(dtype=wp.float32), # num_openings x num_joints
     cspace_positions: wp.array2d(dtype=wp.float32), # num_grasps x num_cspace_joint_names
 ):
     grasp_idx, joint_idx = wp.tid()
     offset = offsets[grasp_idx]
     cspace_joint_idx = cspace_joint_indices[joint_idx]
-    cspace_positions[grasp_idx, joint_idx] = joint_cspace_pos[grasp_idx, cspace_joint_idx]
+    cspace_positions[grasp_idx, joint_idx] = joint_cspace_pos[offset, cspace_joint_idx]
 
 @wp.kernel
 def get_bite_points_kernel(
@@ -1020,4 +1020,3 @@ def transform_inverse_isaaclab_kernel(
     dst[tid+dst_start_idx][4] = inv[3]
     dst[tid+dst_start_idx][5] = inv[4]
     dst[tid+dst_start_idx][6] = inv[5]
-   

@@ -155,8 +155,9 @@ import copy
 import warp as wp
 import json
 from warp_kernels import (
-    world_to_object_force_kernel, get_joint_pos_kernel, compute_relative_pos_and_rot_kernel,
-    get_joint_pos_kernel, set_is_success_kernel, get_body_pos_kernel, transform_inverse_kernel, get_cspace_positions_kernel, get_bite_points_kernel
+    world_to_object_force_kernel, compute_relative_pos_and_rot_kernel,
+    set_joint_pos_from_cspace_kernel, get_cspace_from_joint_pos_kernel,
+    set_is_success_kernel, get_body_pos_kernel, transform_inverse_kernel, get_cspace_positions_kernel, get_bite_points_kernel
 )
 import time
 from datetime import datetime
@@ -419,10 +420,20 @@ class GraspingSimulation:
         for i in range(num_grasps):
             grasp = valid_grasp_indices[i][1]
             grasp_idx_map[i] = valid_grasp_indices[i][0]
+            transform_position_key = "position"
+            transform_orientation_key = "orientation"
+            if (
+                self.config.start_with_pregrasp_cspace_position
+                and "pregrasp_position" in grasp
+                and "pregrasp_orientation" in grasp
+            ):
+                transform_position_key = "pregrasp_position"
+                transform_orientation_key = "pregrasp_orientation"
+
             # Extract position and orientation
-            position = np.array(grasp['position'])
-            orientation_xyz = np.array(grasp['orientation']['xyz'])
-            orientation_w = grasp['orientation']['w']
+            position = np.array(grasp[transform_position_key])
+            orientation_xyz = np.array(grasp[transform_orientation_key]['xyz'])
+            orientation_w = grasp[transform_orientation_key]['w']
             # wp.transforms are [x, y, z, qx, qy, qz, qw]
             if self.config.flip_input_grasps: #rotate the grasps for debugging
                 zrot=wp.quat(0.0,0.0,0.0, 0.0)
@@ -560,8 +571,8 @@ class GraspingSimulation:
         if self.config.grasp_file is not None:
             # Note only_driven_joints does not work with grasp_file, what comes in is what comes out as far as joints go.
             isaac_grasp_data = copy.deepcopy(self.original_grasp_yaml_data)
-            if 'created_with' not in isaac_grasp_data or isaac_grasp_data['created_with'] != "grasp_guess":
-                print_red("Grasp file was not created with grasp_guess")
+            if isaac_grasp_data.get('created_with') not in ("grasp_guess", "grasp_sim"):
+                print_red("Grasp file was not created with grasp_guess or grasp_sim")
             isaac_grasp_data["created_with"] = "grasp_sim"
             isaac_grasp_data["created_at"] = datetime.now().isoformat()
             # Update gripper_file to reflect the actual gripper file used in simulation
@@ -606,10 +617,12 @@ class GraspingSimulation:
                 else:
                     num_fails += 1
                 grasp["confidence"] = confidence
-                grasp["pregrasp_position"] = copy.deepcopy(grasp["position"])
-                grasp["pregrasp_orientation"] = copy.deepcopy(grasp["orientation"])
-                # Use a safe fallback if original YAML lacked bite_point
-                _pre_bite = grasp.get("bite_point", [0.0, 0.0, 0.0])
+                pregrasp_position = grasp.get("pregrasp_position", grasp["position"])
+                pregrasp_orientation = grasp.get("pregrasp_orientation", grasp["orientation"])
+                grasp["pregrasp_position"] = copy.deepcopy(pregrasp_position)
+                grasp["pregrasp_orientation"] = copy.deepcopy(pregrasp_orientation)
+                # Use a safe fallback if original YAML lacked pregrasp_bite_point
+                _pre_bite = grasp.get("pregrasp_bite_point", grasp.get("bite_point", [0.0, 0.0, 0.0]))
                 grasp["pregrasp_bite_point"] = copy.deepcopy(_pre_bite)
                 if not confidence and not self.config.output_failed_grasp_locations:
                     continue
@@ -842,7 +855,7 @@ class GraspingSimulation:
             self.cspace_joint_indices = wp.array(self.cspace_joint_indices, dtype=wp.int32, device=self.config.device)
 
         wp.launch(
-            kernel=get_joint_pos_kernel,
+            kernel=set_joint_pos_from_cspace_kernel,
             dim=(num_envs, len(self.cspace_joint_names)),
             inputs=[start_idx, 0, buff.pregrasp_cspace_positions, self.cspace_joint_indices],
             outputs=[joint_pos],
@@ -1184,7 +1197,7 @@ class GraspingSimulation:
                         outputs=[buff.transforms],
                         device=self.config.device)
                     wp.launch(
-                        kernel=get_joint_pos_kernel,
+                        kernel=get_cspace_from_joint_pos_kernel,
                         dim=(num_envs, len(self.cspace_joint_names)),
                         inputs=[0, start_idx, gripper.data.joint_pos, self.cspace_joint_indices],
                         outputs=[buff.cspace_positions],
@@ -1203,12 +1216,6 @@ class GraspingSimulation:
 
                     # we want to keep simming if the UI is open so the UI does not freeze
                     data_done = True
-                    if do_render and self.force_headed:
-                        print_purple(f"In {__file__}, waiting for Isaac Lab to close...", flush=True)
-
-                        while simulation_app.is_running():
-                            sim.step(render=do_render)
-
                     print("\033[0m", end="")
                     return
 
