@@ -43,6 +43,7 @@ default_debug_single_index = 0
 default_output_failed_grasp_locations = False
 default_flip_input_grasps = False
 default_enable_ccd = True
+default_auto_close_headed = False
 
 def collect_grasp_sim_args(input_dict):
     desired_keys = [
@@ -62,7 +63,8 @@ def collect_grasp_sim_args(input_dict):
         "default_debug_single_index",
         "default_output_failed_grasp_locations",
         "default_flip_input_grasps",
-        "default_enable_ccd"]
+        "default_enable_ccd",
+        "default_auto_close_headed"]
     kwargs = {}
     for key in desired_keys:
         if key in input_dict:
@@ -90,7 +92,8 @@ def add_grasp_sim_args(parser, param_dict, default_grasp_file=default_grasp_file
                        default_debug_single_index=default_debug_single_index,
                        default_output_failed_grasp_locations=default_output_failed_grasp_locations,
                        default_flip_input_grasps=default_flip_input_grasps,
-                       default_enable_ccd=default_enable_ccd):
+                       default_enable_ccd=default_enable_ccd,
+                       default_auto_close_headed=default_auto_close_headed):
 
     # Register argument groups since we'll be adding arguments to them
     from graspgen_utils import register_argument_group
@@ -142,6 +145,8 @@ def add_grasp_sim_args(parser, param_dict, default_grasp_file=default_grasp_file
         help="Flip (rotate 180 degrees around approach-axis) the input grasps for debugging purposes.")
     add_arg_to_group('grasp_sim', parser, "--enable_ccd", type=str_to_bool, nargs='?', const=True, default=default_enable_ccd,
         help="Enable continuous collision detection (CCD) in the physics simulation (prevents fast-moving objects from tunneling through each other).")
+    add_arg_to_group('grasp_sim', parser, "--auto_close_headed", action="store_true", default=default_auto_close_headed,
+        help="Close the Isaac Sim app after validation even when --force_headed is used.")
 
     add_isaac_lab_args_if_needed(parser)
 
@@ -1245,21 +1250,22 @@ class GraspingSimulation:
 def main(args):
     # Initialize simulation_app when needed
     simulation_app = start_isaac_lab_if_needed(file_name=__file__, headless = False if args.force_headed else args.headless, wait_for_debugger_attach=args.wait_for_debugger_attach)
+    should_close_app = not args.force_headed or args.auto_close_headed
 
-    grasp_sim_cfg = GraspingSimulationConfig(
-                 max_num_envs = args.max_num_envs, env_spacing = args.env_spacing, fps = args.fps, force_magnitude = args.force_magnitude, initial_grasp_duration = args.initial_grasp_duration, tug_sequences = args.tug_sequences,
-                 start_with_pregrasp_cspace_position = args.start_with_pregrasp_cspace_position, open_limit = args.open_limit,
-                 disable_sim = args.disable_sim, record_pvd = args.record_pvd, debug_single_index = args.debug_single_index,
-                 output_failed_grasp_locations = args.output_failed_grasp_locations, flip_input_grasps = args.flip_input_grasps, enable_ccd = args.enable_ccd, device=args.device, max_num_grasps=args.max_num_grasps, grasp_file= args.grasp_file, grasp_file_args=args)
-    grasp_sim = GraspingSimulation(grasp_sim_cfg, force_headed=args.force_headed, wait_for_debugger_attach=args.wait_for_debugger_attach)
-    grasp_sim_buffer = grasp_sim.validate_grasps()
-    save_to_folder = os.path.join(os.environ.get('GRASP_DATASET_DIR', ''), "grasp_sim_data")
-    if grasp_sim_buffer is not None:
-        isaac_grasp_data, file_name = grasp_sim.create_isaac_grasp_data(grasp_sim_buffer, save_to_folder=save_to_folder)
-
-    # Don't close the simulation app if force_headed is used, let it run until user closes it
-    if not args.force_headed:
-        simulation_app.close()
+    try:
+        grasp_sim_cfg = GraspingSimulationConfig(
+                     max_num_envs = args.max_num_envs, env_spacing = args.env_spacing, fps = args.fps, force_magnitude = args.force_magnitude, initial_grasp_duration = args.initial_grasp_duration, tug_sequences = args.tug_sequences,
+                     start_with_pregrasp_cspace_position = args.start_with_pregrasp_cspace_position, open_limit = args.open_limit,
+                     disable_sim = args.disable_sim, record_pvd = args.record_pvd, debug_single_index = args.debug_single_index,
+                     output_failed_grasp_locations = args.output_failed_grasp_locations, flip_input_grasps = args.flip_input_grasps, enable_ccd = args.enable_ccd, device=args.device, max_num_grasps=args.max_num_grasps, grasp_file= args.grasp_file, grasp_file_args=args)
+        grasp_sim = GraspingSimulation(grasp_sim_cfg, force_headed=args.force_headed, wait_for_debugger_attach=args.wait_for_debugger_attach)
+        grasp_sim_buffer = grasp_sim.validate_grasps()
+        save_to_folder = os.path.join(os.environ.get('GRASP_DATASET_DIR', ''), "grasp_sim_data")
+        if grasp_sim_buffer is not None:
+            isaac_grasp_data, file_name = grasp_sim.create_isaac_grasp_data(grasp_sim_buffer, save_to_folder=save_to_folder)
+    finally:
+        if should_close_app:
+            simulation_app.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Grasp validation through simulation part of Grasp Gen Data Generation.")
