@@ -11,8 +11,6 @@ import argparse
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -112,26 +110,18 @@ def clean_target(value: str) -> str:
     return strip_value(value)
 
 
-def run_usdcat(usd_path: str) -> Iterable[tuple[int, str]]:
-    usdcat = shutil.which("usdcat")
-    if not usdcat:
-        raise RuntimeError("PATH 中找不到 usdcat。请安装 Pixar USD tools，或把 usdcat 加入 PATH。")
+def iter_usd_text(usd_path: str) -> Iterable[tuple[int, str]]:
+    try:
+        from pxr import Sdf
+    except ImportError as exc:
+        raise RuntimeError("无法导入 pxr.Sdf。请安装 USD Python bindings，例如 `pip install usd-core`。") from exc
 
-    proc = subprocess.Popen(
-        [usdcat, usd_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-    )
-    assert proc.stdout is not None
-    for line_no, line in enumerate(proc.stdout, 1):
-        yield line_no, line.rstrip("\n")
+    layer = Sdf.Layer.FindOrOpen(usd_path)
+    if layer is None:
+        raise RuntimeError(f"无法打开 USD layer: {usd_path}")
 
-    stderr = proc.stderr.read() if proc.stderr else ""
-    rc = proc.wait()
-    if rc != 0:
-        raise RuntimeError(f"usdcat 运行失败，exit code={rc}:\n{stderr.strip()}")
+    for line_no, line in enumerate(layer.ExportToString().splitlines(), 1):
+        yield line_no, line
 
 
 def parse_usd(usd_path: str) -> UsdSummary:
@@ -141,7 +131,7 @@ def parse_usd(usd_path: str) -> UsdSummary:
     warnings: list[str] = []
     stack: list[Prim] = []
 
-    for line_no, line in run_usdcat(usd_path):
+    for line_no, line in iter_usd_text(usd_path):
         meta = META_RE.match(line)
         if meta and not stack:
             metadata[meta.group(1)] = strip_value(meta.group(2))
