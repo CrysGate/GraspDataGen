@@ -1,0 +1,20 @@
+[project]
+name = "graspdatagen"
+version = "0.1.0"
+description = "Grasp data generation experiments based on Isaac Sim and Isaac Lab."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "isaacsim==5.1.0.0",
+    "isaaclab==2.3.2.post1",
+
+    "torch==2.7.0",
+    "torchvision==0.22.0",
+    "torchaudio==2.7.0",
+
+    "numpy<2",
+    "matplotlib",
+    "meshcat",
+    "usd-core==26.5",
+    "debugpy",
+]
