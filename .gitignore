@@ -208,3 +208,4 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 bots/.thumbs/
+objects/cola.obj
