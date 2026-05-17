@@ -3,7 +3,7 @@
 Run datagen.py for multiple configured grippers and summarize the outputs.
 
 Example:
-    uv run python scripts/graspgen/tools/batch_datagen_grippers.py \
+    uv run --locked --no-sync python scripts/graspgen/tools/batch_datagen_grippers.py \
         --object_scales_json objects/datagen_example.json \
         --object_root objects \
         --num_grasps 1024 \
@@ -192,9 +192,12 @@ def collect_gripper_stats(
 
 
 def build_datagen_command(gripper_config_name: str, args: argparse.Namespace) -> list[str]:
-    cmd = [
-        "uv",
-        "run",
+    cmd = ["uv", "run"]
+    if not args.allow_uv_lock_update:
+        cmd.append("--locked")
+    if not args.allow_uv_sync:
+        cmd.append("--no-sync")
+    cmd.extend([
         "python",
         "scripts/graspgen/datagen.py",
         "--gripper_config",
@@ -211,7 +214,7 @@ def build_datagen_command(gripper_config_name: str, args: argparse.Namespace) ->
         str(args.force_magnitude),
         "--sim_output_folder",
         args.sim_output_folder,
-    ]
+    ])
     if args.overwrite_existing:
         cmd.append("--overwrite_existing")
     if args.device:
@@ -385,6 +388,16 @@ def make_parser() -> argparse.ArgumentParser:
         help="Return exit code 1 if any gripper command fails after writing the summary.",
     )
     parser.add_argument(
+        "--allow_uv_sync",
+        action="store_true",
+        help="Allow inner 'uv run' datagen commands to sync/install the project environment.",
+    )
+    parser.add_argument(
+        "--allow_uv_lock_update",
+        action="store_true",
+        help="Allow inner 'uv run' datagen commands to update uv.lock.",
+    )
+    parser.add_argument(
         "extra_datagen_args",
         nargs=argparse.REMAINDER,
         help="Extra args forwarded to datagen.py after a '--' separator.",
@@ -460,6 +473,8 @@ def main() -> int:
             "device": args.device,
             "min_success_grasps": args.min_success_grasps,
             "dry_run": args.dry_run,
+            "allow_uv_sync": args.allow_uv_sync,
+            "allow_uv_lock_update": args.allow_uv_lock_update,
             "extra_datagen_args": args.extra_datagen_args,
         },
         "objects": objects_and_scales,
