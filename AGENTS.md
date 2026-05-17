@@ -8,10 +8,6 @@ GraspDataGen is a Python workflow built around IsaacLab/PhysX. Core scripts live
 
 The batch path is: generate candidate grasps with `datagen.py`, then validate them with `grasp_sim.py`. In practice, treat grasp guess output as provisional until simulation has accepted it. When changing gripper behavior, first regenerate the gripper definition with `create_gripper_lab.py`, then inspect the saved `.npz` and the emitted grasp YAML before changing downstream code.
 
-IsaacLab/PhysX should be treated as available in this repository. Do not skip validation because the simulation stack is heavy. When changing gripper USDs, gripper configuration, open/closed semantics, grasp generation, or grasp validation, run a focused IsaacLab smoke validation unless the user explicitly asks for documentation-only work.
-
-Before starting gripper, datagen, or grasp simulation work, read `TODO.md`. Keep it current when you complete a roadmap item, discover a new gripper candidate, or identify a blocking failure mode.
-
 ## Multi-Gripper Adaptation Goals
 
 The core project goal is to support multiple two-finger grippers that can generate correct grasp data accepted by real simulation validation. A gripper is not adapted just because `grasp_guess.py` emits a YAML file; it must have a usable gripper USD, a verified generated definition, plausible pregrasp/grasp c-space data, and successful `grasp_sim.py` results.
@@ -20,7 +16,7 @@ Gripper sources may come from:
 
 - `bots/`: preferred location for pure gripper USD assets used by this pipeline.
 - `robot_usds/grippers/`: candidate pure or near-pure gripper assets that may need cleanup before registration.
-- `robot/`, `robot_usds/humannoid/`, `robot_usds/manipulators/`, or similar folders: full robots or arms that may contain a two-finger end effector.
+- `robot/`: full robots or arms that may contain a two-finger end effector.
 
 If a source USD is a full robot, arm, or scene, do not use it directly as `--gripper_file` for data generation. First extract or generate a USD that contains only the gripper, put that result under `bots/`, register it in `GRIPPER_CONFIGS`, then validate it through the normal definition, guess, and simulation path. It is acceptable to edit or regenerate USD files when the USD itself is the root cause, including mass, friction, collision bodies, joint setup, drives, or frame placement.
 
@@ -45,8 +41,6 @@ If no successful grasp data can be produced after reasonable tuning, do not keep
 - The gripper definition extraction is wrong, such as incorrect finger colliders, base frame, open axis, approach axis, open limit, or bite point.
 - The grasp guess pipeline is producing invalid pregrasp/grasp c-space, bad approach poses, bad centering, or incorrect close direction.
 - The simulation validation is wrong or too strict, such as incorrect contact detection, force application, gravity handling, object mass, or success criteria.
-
-Document the suspected branch, evidence, and next action in `TODO.md`.
 
 ## Agent-Specific Instructions
 
