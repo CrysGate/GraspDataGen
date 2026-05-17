@@ -129,7 +129,7 @@ GRIPPER_CONFIGS = {
     },
     'robot_g1_omnipicker_gripper': {
         'gripper_file': 'bots/robot_g1_omnipicker_gripper.usd',
-        'finger_colliders': ['gripper_r_inner_link2', 'gripper_r_outer_link4'],
+        'finger_colliders': ['gripper_r_inner_link4', 'gripper_r_outer_link4'],
         'base_frame': 'gripper_r_base_link',
         'bite': 0.016,
         'pinch_width_resolution': 8,
@@ -143,7 +143,7 @@ GRIPPER_CONFIGS = {
     },
     'robot_g2_omnipicker_gripper': {
         'gripper_file': 'bots/robot_g2_omnipicker_gripper.usd',
-        'finger_colliders': ['gripper_r_inner_link2', 'gripper_r_outer_link4'],
+        'finger_colliders': ['gripper_r_inner_link4', 'gripper_r_outer_link4'],
         'base_frame': 'gripper_r_base_link',
         'bite': 0.016,
         'pinch_width_resolution': 8,
