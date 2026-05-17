@@ -980,7 +980,8 @@ class GraspingSimulation:
             dt=1.0/self.config.fps,  # Set physics timestep based on FPS
             physx=sim_utils.PhysxCfg(
                 min_position_iteration_count=64,
-                #min_velocity_iteration_count=0,
+                min_velocity_iteration_count=1,
+                enable_external_forces_every_iteration=True,
                 # Reduce from 2**30 (1GB) to 2**26 (64MB) to avoid contamination
                 #gpu_collision_stack_size=2**26,  # 64MB instead of 1GB
                 # Add explicit memory settings to prevent corruption
