@@ -16,4 +16,5 @@ dependencies = [
     "usd-core==26.5",
     "debugpy",
     "rich>=15.0.0",
+    "warp-lang==1.12.1"
 ]

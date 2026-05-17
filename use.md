@@ -212,6 +212,19 @@ uv run scripts/graspgen/grasp_sim.py \
       --force_magnitude 0.5 \
       --gravity_force_scale 3.0 \
       --headed_hold_seconds 1.0
+```
+
+# robot_g2_omnipicker_gripper
+```bash
+python scripts/graspgen/datagen.py \
+    --gripper_config robot_g2_omnipicker_gripper \
+    --object_scales_json objects/datagen_example.json \
+    --object_root objects \
+    --num_grasps 1024 \
+    --max_num_envs 512 \
+    --force_magnitude 0.2 \
+    --overwrite_existing
+```
 
 
 Piper USD的碰撞 API 原来主要挂在 Xform 父节点，实际 Mesh 没有直接成为 collider，导致验证时 finger 接触经常为 0。
