@@ -124,6 +124,40 @@ def iter_usd_text(usd_path: str) -> Iterable[tuple[int, str]]:
         yield line_no, line
 
 
+def enrich_with_pxr(summary: UsdSummary) -> None:
+    """用真正的 pxr.Usd.Stage 把每个 prim 的真实 type 和 applied APIs 合并回 summary。
+
+    纯文本扫描看不到 reference / over 的 composition 结果。例如
+    `/Robotiq_2F_86/right_inner_finger/visuals/...` 下的 mesh 在文本里只能看到
+    `over "..."`（无 type），真正的 `def Mesh "..."` 在 prototype 段。Composition
+    完成后才能拿到正确 type=Mesh + CollisionAPI。
+    """
+    try:
+        from pxr import Usd  # type: ignore
+    except ImportError:
+        return
+    try:
+        stage = Usd.Stage.Open(summary.usd_path)
+    except Exception:  # noqa: BLE001
+        return
+    if stage is None:
+        return
+    for prim in stage.Traverse():
+        path = str(prim.GetPath())
+        s_prim = summary.prims.get(path)
+        if s_prim is None:
+            continue
+        if not s_prim.type_name:
+            tn = prim.GetTypeName()
+            if tn:
+                s_prim.type_name = str(tn)
+        apis_set = set(s_prim.apis)
+        for api in prim.GetAppliedSchemas():
+            if api not in apis_set:
+                s_prim.apis.append(api)
+                apis_set.add(api)
+
+
 def parse_usd(usd_path: str) -> UsdSummary:
     prims: dict[str, Prim] = {}
     root_paths: list[str] = []
@@ -141,19 +175,30 @@ def parse_usd(usd_path: str) -> UsdSummary:
             specifier, maybe_type, name = prim_match.groups()
             parent = stack[-1].path if stack else None
             path = f"{parent}/{name}" if parent else f"/{name}"
-            prim = Prim(
-                path=path,
-                name=name,
-                type_name=maybe_type or "",
-                specifier=specifier,
-                parent=parent,
-                line=line_no,
-            )
-            prims[path] = prim
-            if parent and parent in prims:
-                prims[parent].children.append(path)
+            existing = prims.get(path)
+            if existing is not None:
+                # USD `over "..."` 不带 type，会覆盖前面 `def Mesh "..."` 的记录。
+                # 合并：保留 type / apis / refs / 已收集 attrs，让后续 attrs 继续累加。
+                prim = existing
+                if maybe_type and not prim.type_name:
+                    prim.type_name = maybe_type
+                # specifier 优先保留 "def"
+                if existing.specifier != "def" and specifier == "def":
+                    prim.specifier = specifier
             else:
-                root_paths.append(path)
+                prim = Prim(
+                    path=path,
+                    name=name,
+                    type_name=maybe_type or "",
+                    specifier=specifier,
+                    parent=parent,
+                    line=line_no,
+                )
+                prims[path] = prim
+                if parent and parent in prims:
+                    prims[parent].children.append(path)
+                else:
+                    root_paths.append(path)
             stack.append(prim)
 
         if not stack:
@@ -189,6 +234,7 @@ def parse_usd(usd_path: str) -> UsdSummary:
             close_count -= 1
 
     summary = UsdSummary(os.path.abspath(usd_path), metadata, prims, root_paths, warnings)
+    enrich_with_pxr(summary)
     add_warnings(summary)
     return summary
 
@@ -298,10 +344,43 @@ def short_path(path: str | None) -> str:
     return path.rsplit("/", 1)[-1]
 
 
-def prim_by_name(summary: UsdSummary, name: str | object) -> Prim | None:
+def prims_by_name(summary: UsdSummary, name: str | object) -> list[Prim]:
     if not isinstance(name, str):
-        return None
-    matches = [prim for prim in summary.prims.values() if prim.name == name]
+        return []
+    return [prim for prim in summary.prims.values() if prim.name == name]
+
+
+def prims_by_name_in_default(summary: UsdSummary, name: str | object) -> list[Prim]:
+    """只返回 defaultPrim 子树里同名的 prim。
+
+    扁平化的 Flattened_Prototype_* 段在 USD 文本里也会出现同名 prim，但 IsaacLab
+    UsdFileCfg 只 spawn defaultPrim，所以这些 prototype 副本不应该参与"finger 实际
+    解析到哪个 link"的判定。
+    """
+    if not isinstance(name, str):
+        return []
+    default = summary.metadata.get("defaultPrim", "").strip().strip('"')
+    if not default:
+        return prims_by_name(summary, name)
+    root = f"/{default}"
+    prefix = f"{root}/"
+    return [
+        prim for prim in summary.prims.values()
+        if prim.name == name and (prim.path == root or prim.path.startswith(prefix))
+    ]
+
+
+def body_prims_by_name_in_default(summary: UsdSummary, name: str | object) -> list[Prim]:
+    """defaultPrim 子树里同名 且 是 rigid body 的 prim。
+
+    finger / base 在 USD 文本里可能被 collisions/visuals 子 prim 同名复用，但
+    IsaacLab 的 body_names 只看 RigidBodyAPI，所以判定时也应该过滤一遍。
+    """
+    return [prim for prim in prims_by_name_in_default(summary, name) if is_body(prim)]
+
+
+def prim_by_name(summary: UsdSummary, name: str | object) -> Prim | None:
+    matches = prims_by_name(summary, name)
     return matches[0] if matches else None
 
 
@@ -327,6 +406,113 @@ def physics_material_prims(summary: UsdSummary) -> list[Prim]:
 
 def articulation_prims(summary: UsdSummary) -> list[Prim]:
     return [prim for prim in summary.prims.values() if has_api(prim, "Articulation")]
+
+
+def is_driven_joint(joint: Prim) -> bool:
+    return any("DriveAPI" in api for api in joint.apis)
+
+
+def is_mesh_collider(prim: Prim) -> bool:
+    """直接挂在 Mesh prim 上的 CollisionAPI。"""
+    return prim.type_name == "Mesh" and has_api(prim, "CollisionAPI")
+
+
+def is_real_mesh_collider(prim: Prim) -> bool:
+    """认作有效的 collider：要么是 Mesh + CollisionAPI，要么是 Xform + CollisionAPI 且
+    有 reference 指向 prototype（prototype 内部含 Mesh）。Xform + CollisionAPI 但既不
+    是 Mesh 也无 reference 时，运行时 usd_tools 不会收集顶点（Piper 早期那个坑）。
+    """
+    if not has_api(prim, "CollisionAPI"):
+        return False
+    return prim.type_name == "Mesh" or bool(prim.references)
+
+
+def collider_yields_mesh(summary: UsdSummary, prim: Prim) -> bool:
+    """判一个挂 PhysicsCollisionAPI 的 prim 在运行时能否真的提供 Mesh 顶点。
+
+    usd_tools.get_prim_collision_mesh 会从启用了 CollisionAPI 的 prim 起向下递归，
+    然后只在 type_name == 'Mesh' 时收集顶点。所以合法的 collider 形态有三种：
+      1) prim 自己就是 Mesh（且挂 CollisionAPI）
+      2) prim 通过 reference 指向 prototype（prototype 里递归会展开出 Mesh）
+      3) prim 是 Xform + CollisionAPI，但它的子孙里有 Mesh prim
+         （父 collision_enabled 被子 Mesh 继承）
+    """
+    if prim.type_name == "Mesh" or prim.references:
+        return True
+    for child in descendants_with_self(summary, prim):
+        if child.type_name == "Mesh":
+            return True
+    return False
+
+
+def descendants_with_self(summary: UsdSummary, prim: Prim) -> list[Prim]:
+    return [prim, *descendants(summary, prim.path)]
+
+
+def find_world_fixed_joints(summary: UsdSummary) -> list[Prim]:
+    """挑出 body0 指向 world (None / 空) 的 PhysicsFixedJoint。"""
+    out: list[Prim] = []
+    for joint in joint_prims(summary):
+        if "FixedJoint" not in joint.type_name:
+            continue
+        body0 = joint.rels.get("physics:body0")
+        if body0 is None or body0 in {"", "None"}:
+            out.append(joint)
+    return out
+
+
+def driving_joint_drive_attrs(joint: Prim) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for key, value in joint.attrs.items():
+        if not key.startswith("drive:"):
+            continue
+        try:
+            out[key] = float(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def parse_translate(value: str) -> tuple[float, float, float] | None:
+    nums = re.findall(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:e[-+]?\d+)?", value, flags=re.IGNORECASE)
+    if len(nums) < 3:
+        return None
+    return float(nums[0]), float(nums[1]), float(nums[2])
+
+
+def check_mesh_triangulation(usd_path: str) -> tuple[list[str], str | None]:
+    """用 pxr 真正打开 USD，校验每个 Mesh 的 faceVertexCounts。
+
+    返回 (errors, skip_reason)。skip_reason 非 None 表示由于环境原因（缺 pxr 等）
+    没有跑成检查，调用方应当把它当 CHECK 而不是 OK/FAIL。
+    """
+    try:
+        from pxr import Usd, UsdGeom  # type: ignore
+    except ImportError as exc:
+        return [], f"未安装 pxr (USD Python bindings)；跳过三角面检查（{exc}）。"
+
+    errors: list[str] = []
+    try:
+        stage = Usd.Stage.Open(usd_path, Usd.Stage.LoadAll)
+    except Exception as exc:  # noqa: BLE001
+        return [], f"无法打开 USD stage 做三角面检查: {exc}"
+    if stage is None:
+        return [], "无法打开 USD stage 做三角面检查。"
+
+    for prim in stage.Traverse():
+        if prim.GetTypeName() != "Mesh":
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        counts_attr = mesh.GetFaceVertexCountsAttr()
+        if not counts_attr or not counts_attr.HasValue():
+            continue
+        counts = counts_attr.Get()
+        if counts is None:
+            continue
+        non_tri = sum(1 for c in counts if c != 3)
+        if non_tri:
+            errors.append(f"{prim.GetPath()}: {non_tri}/{len(counts)} 个非三角面")
+    return errors, None
 
 
 def root_candidates(summary: UsdSummary, include_prototypes: bool = False) -> list[Prim]:
@@ -384,11 +570,6 @@ def build_checks(summary: UsdSummary, config: dict[str, object] | None) -> list[
         else:
             checks.append(Check("guess", "OK", "finger_colliders 可解析", ", ".join(finger_names)))
             checks.append(Check("sim", "OK", "contact sensor body names 可解析", ", ".join(finger_names)))
-            for name in finger_names:
-                finger = prim_by_name(summary, name)
-                if finger and not collision_children(summary, finger):
-                    checks.append(Check("guess", "FAIL", f"{name} 没有 collision child", "grasp_guess 依赖 finger collision meshes 做 raycast 和 opening 检查。"))
-                    checks.append(Check("sim", "FAIL", f"{name} 没有 collision child", "这个 finger 可能无法产生 PhysX contacts。"))
 
     if not moving_joints:
         checks.append(Check("guess", "FAIL", "没有可运动 joints", "无法推导 open/closed c-space samples。"))
@@ -431,6 +612,174 @@ def build_checks(summary: UsdSummary, config: dict[str, object] | None) -> list[
         if mass is not None and mass.strip() in {"0", "0.0"}:
             stage = "sim"
             checks.append(Check(stage, "RISK", f"{body.name} 的 mass 为 0", "如果它是 fixed base 可能合理，但仍需要在 simulation 里确认 finger/base dynamics。"))
+
+    # --- 新增的硬性 / 软性检查 ---
+
+    # (a) defaultPrim 必须是 articulation root 的祖先（IsaacLab UsdFileCfg 只 spawn defaultPrim 子树）
+    default_prim_raw = summary.metadata.get("defaultPrim", "").strip().strip('"')
+    default_prim_name = default_prim_raw or None
+    if default_prim_name:
+        if articulations:
+            articulation_paths = [prim.path for prim in articulations]
+            on_default = any(
+                path == f"/{default_prim_name}" or path.startswith(f"/{default_prim_name}/")
+                for path in articulation_paths
+            )
+            if not on_default:
+                checks.append(Check("sim", "FAIL",
+                    "Articulation root 不在 defaultPrim 子树内",
+                    f"defaultPrim='{default_prim_name}'，但 articulation 在 {', '.join(articulation_paths)}。"
+                    "IsaacLab UsdFileCfg 只 spawn defaultPrim 及其子树。"))
+            else:
+                checks.append(Check("sim", "OK",
+                    "Articulation root 在 defaultPrim 子树内",
+                    f"defaultPrim='{default_prim_name}'。"))
+    else:
+        checks.append(Check("sim", "RISK",
+            "USD 未声明 defaultPrim",
+            "metadata 中找不到 defaultPrim；IsaacLab UsdFileCfg 加载行为未定义。"))
+
+    # (b) 必须有 PhysicsFixedJoint 把 base_frame 锚到 world
+    world_fixed_joints = find_world_fixed_joints(summary)
+    if base_name:
+        base_anchored = any(
+            short_path(joint.rels.get("physics:body1")) == base_name
+            for joint in world_fixed_joints
+        )
+        if not base_anchored:
+            checks.append(Check("sim", "FAIL",
+                "缺少把 base 锚到 world 的 PhysicsFixedJoint",
+                f"未找到 body0=None 且 body1=/.../{base_name} 的 fixed joint；"
+                "spawn 后整把夹爪会自由下落/漂走。"))
+        else:
+            checks.append(Check("sim", "OK",
+                "base 已通过 fixed joint 锚到 world",
+                f"base_frame='{base_name}'。"))
+
+    # (c) 配置里指定的 finger / base 在 defaultPrim 子树里是否唯一（只看 rigid body）
+    if base_name:
+        bases = body_prims_by_name_in_default(summary, base_name)
+        if len(bases) > 1:
+            checks.append(Check("guess", "FAIL",
+                f"base_frame '{base_name}' 在 defaultPrim 子树里有 {len(bases)} 个 rigid body 匹配",
+                ", ".join(prim.path for prim in bases) +
+                "；summarize 取第一个，但 create_gripper_lab 可能解析到另一个。"))
+
+    if finger_names:
+        for name in finger_names:
+            matches = body_prims_by_name_in_default(summary, name)
+            if len(matches) > 1:
+                checks.append(Check("guess", "FAIL",
+                    f"finger_collider '{name}' 在 defaultPrim 子树里有 {len(matches)} 个 rigid body 匹配",
+                    ", ".join(prim.path for prim in matches) +
+                    "；body_names.index 取第一个，可能与你预期不一致。"))
+
+            # (d) finger 子树里必须有挂 PhysicsCollisionAPI 的 prim，且这条 collider
+            # 链能展开出 Mesh（直接 Mesh / instanced reference / 子树含 Mesh）。
+            for finger in matches:
+                sub = descendants_with_self(summary, finger)
+                collider_prims = [prim for prim in sub if has_api(prim, "CollisionAPI")]
+                working = [prim for prim in collider_prims if collider_yields_mesh(summary, prim)]
+                if not collider_prims:
+                    checks.append(Check("sim", "FAIL",
+                        f"{name} ({finger.path}) 子树没有 PhysicsCollisionAPI",
+                        "create_gripper_lab 在这条 link 上收集不到顶点；PhysX 也不会产生 contacts。"))
+                elif not working:
+                    paths = ", ".join(prim.path for prim in collider_prims)
+                    checks.append(Check("sim", "FAIL",
+                        f"{name} ({finger.path}) 的 CollisionAPI 没能展开到 Mesh",
+                        f"找到的 collider: {paths}。usd_tools.get_prim_collision_mesh 只在"
+                        " type=='Mesh' 时收顶点；prim 既不是 Mesh，也没有 reference 到含 Mesh"
+                        " 的 prototype，子树里也没有 Mesh prim（Piper 早期把 API 挂在父 Xform"
+                        " 上导致 finger contacts=0 就是这种）。"))
+                else:
+                    convex_hull = [
+                        prim.name for prim in working
+                        if prim.attrs.get("physics:approximation", "").strip('"') == "convexHull"
+                    ]
+                    if convex_hull:
+                        checks.append(Check("guess", "RISK",
+                            f"{name} 的 collider 使用 convexHull",
+                            f"{', '.join(convex_hull)} approximation=convexHull；finger pad 凹面会被填平，"
+                            "建议改为 convexDecomposition + shrinkWrap。"))
+
+    # (e) base_frame 应放在原点（不含 translate / scale）
+    if base_name:
+        bases = body_prims_by_name_in_default(summary, base_name)
+        base = bases[0] if bases else None
+        if base is not None:
+            translate = base.attrs.get("xformOp:translate")
+            if translate:
+                parsed = parse_translate(translate)
+                if parsed and any(abs(v) > 1e-6 for v in parsed):
+                    checks.append(Check("guess", "RISK",
+                        "base_frame 不在原点",
+                        f"xformOp:translate={translate}。所有 grasp pose 都相对 base，"
+                        "base 上叠 translate 会让输出多一段隐藏 offset。"))
+
+    # (f) mimic referenceJoint 必须真实存在且本身是 driven joint
+    joints_by_name = {joint.name: joint for joint in joints}
+    for joint in joints:
+        for rel_name, rel_value in joint.rels.items():
+            if "MimicJoint" not in rel_name:
+                continue
+            ref_name = short_path(rel_value)
+            if ref_name in {"-", "None", ""}:
+                checks.append(Check("sim", "FAIL",
+                    f"{joint.name} mimic referenceJoint 为空",
+                    f"{rel_name}={rel_value}；多连杆耦合无效。"))
+                continue
+            ref_joint = joints_by_name.get(ref_name)
+            if ref_joint is None:
+                checks.append(Check("sim", "FAIL",
+                    f"{joint.name} mimic referenceJoint 找不到",
+                    f"{rel_name}={rel_value}，本 USD 里没有 name='{ref_name}' 的 joint。"))
+            elif not is_driven_joint(ref_joint):
+                checks.append(Check("sim", "RISK",
+                    f"{joint.name} mimic 引用的 joint 没有 DriveAPI",
+                    f"referenceJoint='{ref_name}' 本身不是 driven joint；mimic 跟随的目标无人推动。"))
+
+    # (g) driving joint 的 drive 强度阈值（防止 IK 不收敛 / 闭合无力）
+    DRIVE_STIFFNESS_REVOLUTE_MIN = 1.0
+    DRIVE_STIFFNESS_PRISMATIC_MIN = 100.0
+    DRIVE_MAXFORCE_MIN = 1.0
+    for joint in moving_joints:
+        if not is_driven_joint(joint):
+            continue
+        is_prismatic = "Prismatic" in joint.type_name
+        drives = driving_joint_drive_attrs(joint)
+        stiff_keys = [k for k in drives if k.endswith(":stiffness")]
+        force_keys = [k for k in drives if k.endswith(":maxForce")]
+        stiff_min = DRIVE_STIFFNESS_PRISMATIC_MIN if is_prismatic else DRIVE_STIFFNESS_REVOLUTE_MIN
+        if stiff_keys:
+            stiff = max(drives[k] for k in stiff_keys)
+            if stiff < stiff_min:
+                checks.append(Check("sim", "RISK",
+                    f"{joint.name} drive stiffness 偏低",
+                    f"stiffness={stiff} < 经验阈值 {stiff_min}（"
+                    f"{'prismatic' if is_prismatic else 'revolute'}）；IK 可能不收敛或闭合无力。"))
+        if force_keys:
+            max_force = max(drives[k] for k in force_keys)
+            if max_force < DRIVE_MAXFORCE_MIN:
+                checks.append(Check("sim", "RISK",
+                    f"{joint.name} drive maxForce 偏低",
+                    f"maxForce={max_force} < {DRIVE_MAXFORCE_MIN}；闭合力不足，物体在 tug 阶段会被扯出。"))
+
+    # (h) Mesh 必须是三角面（运行时 usd_tools.get_prim_collision_mesh 会 raise）
+    tri_errors, tri_skip = check_mesh_triangulation(summary.usd_path)
+    if tri_skip:
+        checks.append(Check("guess", "CHECK", "跳过三角面检查", tri_skip))
+    elif tri_errors:
+        for err in tri_errors[:5]:
+            checks.append(Check("guess", "FAIL", "Mesh 含非三角面",
+                f"{err}。usd_tools.get_prim_collision_mesh 在加载时会 raise ValueError。"))
+        if len(tri_errors) > 5:
+            checks.append(Check("guess", "FAIL", "更多非三角面 mesh",
+                f"另外还有 {len(tri_errors) - 5} 个 Mesh 含非三角面。"))
+    else:
+        checks.append(Check("guess", "OK", "所有 Mesh 都是三角面",
+            "通过 pxr.UsdGeom.Mesh.GetFaceVertexCountsAttr 校验。"))
+
     return checks
 
 
@@ -486,9 +835,6 @@ def add_warnings(summary: UsdSummary) -> None:
         mass = body.attrs.get("physics:mass")
         if mass is not None and mass.strip() in {"0", "0.0"}:
             summary.warnings.append(f"{body.path} 的 physics:mass = {mass}。请确认这是有意设置。")
-        body_collisions = [summary.prims[path] for path in body.children if is_collision(summary.prims[path])]
-        if not body_collisions:
-            summary.warnings.append(f"{body.path} 是 rigid body，但没有直接的 collision child。")
 
 
 def print_section(title: str) -> None:
@@ -691,6 +1037,41 @@ def print_next_actions(checks: list[Check]) -> None:
     console.print(Panel("\n".join(lines), title="建议验证重点", border_style="magenta", box=box.ROUNDED))
 
 
+def print_npz_cache_status(summary: UsdSummary) -> None:
+    """提示 bots/<gripper>.npz 是否与 USD 时间戳一致。"""
+    usd_path = summary.usd_path
+    npz_path = os.path.splitext(usd_path)[0] + ".npz"
+    if not os.path.exists(npz_path):
+        console.print(Panel(
+            f"{npz_path} 不存在；首次跑 create_gripper_lab 时会重新生成。",
+            title="缓存状态 (bots/*.npz)",
+            border_style="dim",
+            box=box.ROUNDED,
+        ))
+        return
+    try:
+        usd_mtime = os.path.getmtime(usd_path)
+        npz_mtime = os.path.getmtime(npz_path)
+    except OSError as exc:  # noqa: BLE001
+        console.print(Panel(f"无法读取时间戳: {exc}", title="缓存状态 (bots/*.npz)", border_style="yellow", box=box.ROUNDED))
+        return
+    delta = npz_mtime - usd_mtime
+    if delta < 0:
+        msg = (
+            f"[bold red]缓存比 USD 旧[/bold red]（USD 比 .npz 新 {-delta:.0f} 秒）。\n"
+            f"建议先 [bold]rm {npz_path}[/bold] 再跑 datagen，"
+            "否则 Gripper.load 在 interpenetration 路径下可能用旧 npz（skip_config_validation=True）。"
+        )
+        style = "red"
+    else:
+        msg = (
+            f"缓存比 USD 新（差 {delta:.0f} 秒），Gripper.load 会再做 config 比对。\n"
+            f"[dim]{npz_path}[/dim]"
+        )
+        style = "green"
+    console.print(Panel(msg, title="缓存状态 (bots/*.npz)", border_style=style, box=box.ROUNDED))
+
+
 def print_summary(
     summary: UsdSummary,
     config_name: str | None,
@@ -866,6 +1247,8 @@ def print_summary(
 
     warning_text = "\n".join(f"- {warning}" for warning in summary.warnings) if summary.warnings else "(none)"
     console.print(Panel(warning_text, title="原始 warnings", border_style="red" if summary.warnings else "green", box=box.ROUNDED))
+
+    print_npz_cache_status(summary)
 
     if details:
         detailed_collisions = [prim for prim in summary.prims.values() if is_collision(prim) and not is_body(prim)]
