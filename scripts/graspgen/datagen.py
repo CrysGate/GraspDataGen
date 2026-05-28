@@ -113,7 +113,7 @@ def datagen_main(args):
 
         grasp_sim_buffer = grasp_sim.validate_grasps()
         if sim_save_to_folder and grasp_sim_buffer is not None:
-            _, _ = grasp_sim.create_isaac_grasp_data(grasp_sim_buffer, only_driven_joints=True, save_successes=True, save_fails=True, save_to_folder=sim_save_to_folder, 
+            _, _ = grasp_sim.create_isaac_grasp_data(grasp_sim_buffer, only_driven_joints=True, save_successes=True, save_fails=False, save_to_folder=sim_save_to_folder, 
                                                      file_name_prefix=file_name_prefix, file_extension_prefix=file_extension_prefix)
         elif sim_save_to_folder:
             print_blue(f"Skipping sim output for {full_object_path}: no grasps were validated")
