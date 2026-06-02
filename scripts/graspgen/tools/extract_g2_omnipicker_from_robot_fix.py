@@ -2,67 +2,37 @@
 # requires-python = ">=3.10"
 # dependencies = ["usd-core"]
 # ///
-"""Extract the right G2 OmniPicker gripper from robot_fix.usda.
+"""Extract right-hand grippers from robot USDs into clean GraspDataGen assets.
 
-This script intentionally does not trust the collision setup authored directly
-on robot/G2_omnipicker/robot_fix.usda. In that stage the gripper collision
-containers are inactive and the visual meshes carry collision APIs. For grasp
-generation we copy articulation metadata from robot_fix.usda, but replace every
-link's visuals/collisions from configuration/robot_physics.usd:
+The robot/ assets are full robot stages. They should not be used directly as
+GraspDataGen grippers because several of them keep inactive collision
+containers, collision APIs on visual meshes, closed-loop constraints, sensors,
+or multiple independent drives. This tool builds a pure gripper stage per
+profile:
 
-  /visuals/<link>   -> /genie/<link>/visuals
-  /colliders/<link> -> /genie/<link>/collisions
+  * one articulation root at /genie;
+  * only right-hand gripper links and required joints;
+  * visuals under each link's /visuals;
+  * collision meshes under each link's /collisions;
+  * no cameras/sensors/external arcs;
+  * a normalized single-drive actuation graph unless a profile explicitly says
+    otherwise.
 
-The default output keeps the source link2 loop bodies as base-driven mimic
-followers, matching the standalone OmniPicker graph. It drops only the source
-spherical loop constraints that close link2 back to the base. Those closed-loop
-constraints make IsaacLab's gripper definition solve discontinuous finger poses,
-which produces non-monotonic or negative open widths.
+The default profile is g2_omnipicker, preserving the existing command behavior.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 
-DEFAULT_ROBOT_STAGE = Path("robot/G2_omnipicker/robot_fix.usda")
-DEFAULT_GEOMETRY_STAGE = Path("robot/G2_omnipicker/configuration/robot_physics.usd")
-DEFAULT_OUTPUT = Path("bots/robot_g2_omnipicker_gripper.usd")
-DEFAULT_REPORT = Path("debug_output/usd_inspect/g2_omnipicker_from_robot_fix.json")
-
 ROOT_PATH = "/genie"
-BASE_LINK = "gripper_r_base_link"
-FINGER_COLLIDERS = ("gripper_r_inner_link4", "gripper_r_outer_link4")
-GRIPPER_LINKS = [
-    "gripper_r_base_link",
-    "gripper_r_inner_link1",
-    "gripper_r_inner_link3",
-    "gripper_r_inner_link4",
-    "gripper_r_inner_link2",
-    "gripper_r_outer_link1",
-    "gripper_r_outer_link3",
-    "gripper_r_outer_link4",
-    "gripper_r_outer_link2",
-]
-MAIN_JOINTS = [
-    "idx71_gripper_r_inner_joint1",
-    "idx72_gripper_r_inner_joint3",
-    "idx73_gripper_r_inner_joint4",
-    "idx79_gripper_r_inner_joint0",
-    "idx81_gripper_r_outer_joint1",
-    "idx82_gripper_r_outer_joint3",
-    "idx83_gripper_r_outer_joint4",
-    "idx89_gripper_r_outer_joint0",
-]
-REMOVED_CLOSED_LOOP_JOINTS = [
-    "idx93_gripper_r_outer_joint2",
-    "idx94_gripper_r_inner_joint2",
-]
 
 PHYSICS_COLLISION_SCHEMAS = (
     "PhysicsCollisionAPI",
@@ -83,6 +53,319 @@ PHYSICS_ATTR_PREFIXES = (
 )
 
 
+@dataclass(frozen=True)
+class DriveSpec:
+    joint: str
+    kind: str
+    stiffness: float
+    damping: float
+    max_force: float
+
+
+@dataclass(frozen=True)
+class MimicSpec:
+    joint: str
+    axis: str
+    gearing: float
+    reference_joint: str | None = None
+    offset: float = 0.0
+
+
+@dataclass(frozen=True)
+class LoopFollowerSpec:
+    joint: str
+    body1: str
+    local_pos0: tuple[float, float, float]
+    local_pos1: tuple[float, float, float]
+    local_rot0: tuple[float, float, float, float]
+    local_rot1: tuple[float, float, float, float]
+    axis: str = "Z"
+
+
+@dataclass(frozen=True)
+class GripperProfile:
+    name: str
+    config_name: str
+    robot_stage: Path
+    geometry_stage: Path
+    output: Path
+    report: Path
+    base_link: str
+    finger_colliders: tuple[str, str]
+    links: tuple[str, ...]
+    joints: tuple[str, ...]
+    active_drive: DriveSpec
+    bite: float
+    pinch_width_resolution: int = 8
+    source_root: str = ROOT_PATH
+    root_path: str = ROOT_PATH
+    limit_overrides: Mapping[str, tuple[float, float]] = field(default_factory=dict)
+    mimic_joints: tuple[MimicSpec, ...] = ()
+    loop_followers: tuple[LoopFollowerSpec, ...] = ()
+    dropped_joints: tuple[str, ...] = ()
+    visual_collision_fallback_links: frozenset[str] = frozenset()
+
+
+OMNIPICKER_LINKS = (
+    "gripper_r_base_link",
+    "gripper_r_inner_link1",
+    "gripper_r_inner_link3",
+    "gripper_r_inner_link4",
+    "gripper_r_inner_link2",
+    "gripper_r_outer_link1",
+    "gripper_r_outer_link3",
+    "gripper_r_outer_link4",
+    "gripper_r_outer_link2",
+)
+OMNIPICKER_JOINTS = (
+    "idx71_gripper_r_inner_joint1",
+    "idx72_gripper_r_inner_joint3",
+    "idx73_gripper_r_inner_joint4",
+    "idx79_gripper_r_inner_joint0",
+    "idx81_gripper_r_outer_joint1",
+    "idx82_gripper_r_outer_joint3",
+    "idx83_gripper_r_outer_joint4",
+    "idx89_gripper_r_outer_joint0",
+)
+OMNIPICKER_LIMITS = {
+    "idx71_gripper_r_inner_joint1": (0.0, 57.2957763671875),
+    "idx72_gripper_r_inner_joint3": (-0.22918309271335602, 1.3750985860824585),
+    "idx73_gripper_r_inner_joint4": (-4.583662033081055, 27.501972198486328),
+    "idx79_gripper_r_inner_joint0": (-17.188732147216797, 103.13239288330078),
+    "idx81_gripper_r_outer_joint1": (-11.459155082702637, 68.75492858886719),
+    "idx82_gripper_r_outer_joint3": (-0.22918309271335602, 1.3750985860824585),
+    "idx83_gripper_r_outer_joint4": (-4.583662033081055, 27.501972198486328),
+    "idx89_gripper_r_outer_joint0": (-17.188732147216797, 103.13239288330078),
+}
+OMNIPICKER_MIMICS = (
+    MimicSpec("idx72_gripper_r_inner_joint3", "rotZ", -0.02),
+    MimicSpec("idx73_gripper_r_inner_joint4", "rotZ", -0.4),
+    MimicSpec("idx79_gripper_r_inner_joint0", "rotZ", -1.5),
+    MimicSpec("idx81_gripper_r_outer_joint1", "rotZ", -1.0),
+    MimicSpec("idx82_gripper_r_outer_joint3", "rotZ", -0.02),
+    MimicSpec("idx83_gripper_r_outer_joint4", "rotZ", -0.4),
+    MimicSpec("idx89_gripper_r_outer_joint0", "rotZ", -1.5),
+)
+OMNIPICKER_LOOP_FOLLOWERS = (
+    LoopFollowerSpec(
+        "idx79_gripper_r_inner_joint0",
+        "gripper_r_inner_link2",
+        local_pos0=(0.0, -0.022, 0.073),
+        local_pos1=(-0.032, 0.01, 0.0),
+        local_rot0=(-0.004648268, -0.70709145, 0.004648268, -0.70709145),
+        local_rot1=(1.0, 0.0, 0.0, 0.0),
+    ),
+    LoopFollowerSpec(
+        "idx89_gripper_r_outer_joint0",
+        "gripper_r_outer_link2",
+        local_pos0=(0.0, 0.022, 0.073),
+        local_pos1=(-0.032, -0.01, 0.0),
+        local_rot0=(-0.004648268, 0.70709145, -0.004648268, -0.70709145),
+        local_rot1=(0.0, 0.0, 1.0, 0.0),
+    ),
+)
+
+G1_120S_LINKS = (
+    "gripper_r_base_link",
+    "gripper_r_inner_link1",
+    "gripper_r_inner_link3",
+    "gripper_r_inner_link4",
+    "gripper_r_inner_link5",
+    "gripper_r_inner_link2",
+    "gripper_r_outer_link1",
+    "gripper_r_outer_link3",
+    "gripper_r_outer_link4",
+    "gripper_r_outer_link5",
+    "gripper_r_outer_link2",
+)
+G1_120S_JOINTS = (
+    "idx71_gripper_r_inner_joint1",
+    "idx72_gripper_r_inner_joint3",
+    "idx73_gripper_r_inner_joint4",
+    "idx74_gripper_r_inner_joint5",
+    "idx79_gripper_r_inner_joint2",
+    "idx81_gripper_r_outer_joint1",
+    "idx82_gripper_r_outer_joint3",
+    "idx83_gripper_r_outer_joint4",
+    "idx84_gripper_r_outer_joint5",
+    "idx89_gripper_r_outer_joint2",
+)
+G1_120S_LIMITS = {
+    "idx71_gripper_r_inner_joint1": (0.0, 57.2957763671875),
+    "idx72_gripper_r_inner_joint3": (-57.2957763671875, 0.0),
+    "idx73_gripper_r_inner_joint4": (0.0, 0.0),
+    "idx79_gripper_r_inner_joint2": (-57.2957763671875, 0.0),
+    "idx81_gripper_r_outer_joint1": (0.0, 57.2957763671875),
+    "idx82_gripper_r_outer_joint3": (0.0, 57.2957763671875),
+    "idx83_gripper_r_outer_joint4": (0.0, 0.0),
+    "idx89_gripper_r_outer_joint2": (-57.2957763671875, 0.0),
+}
+G1_120S_MIMICS = (
+    MimicSpec("idx72_gripper_r_inner_joint3", "rotZ", -1.0),
+    MimicSpec("idx79_gripper_r_inner_joint2", "rotZ", -1.0),
+    MimicSpec("idx81_gripper_r_outer_joint1", "rotZ", 1.0),
+    MimicSpec("idx82_gripper_r_outer_joint3", "rotZ", 1.0),
+    MimicSpec("idx89_gripper_r_outer_joint2", "rotZ", -1.0),
+)
+
+G2_90D_LINKS = (
+    "gripper_r_base_link",
+    "gripper_r_left_inner_link",
+    "gripper_r_left_outer_link",
+    "gripper_r_left_support_link",
+    "gripper_r_right_inner_link",
+    "gripper_r_right_outer_link",
+    "gripper_r_right_support_link",
+)
+G2_90D_JOINTS = (
+    "idx71_gripper_r_inner_joint1",
+    "idx72_gripper_r_outer_joint1",
+    "idx73_gripper_r_left_support_joint",
+    "idx74_gripper_r_inner_joint2",
+    "idx75_gripper_r_outer_joint2",
+    "idx76_gripper_r_right_support_joint",
+)
+G2_90D_LIMITS = {
+    "idx71_gripper_r_inner_joint1": (-52.139156341552734, 0.0),
+    "idx72_gripper_r_outer_joint1": (-52.139156341552734, 0.0),
+    "idx73_gripper_r_left_support_joint": (0.0, 52.139156341552734),
+    "idx74_gripper_r_inner_joint2": (0.0, 52.139156341552734),
+    "idx75_gripper_r_outer_joint2": (0.0, 52.139156341552734),
+    "idx76_gripper_r_right_support_joint": (0.0, 52.139156341552734),
+}
+G2_90D_MIMICS = (
+    MimicSpec("idx72_gripper_r_outer_joint1", "rotZ", 1.0),
+    MimicSpec("idx73_gripper_r_left_support_joint", "rotZ", -1.0),
+    MimicSpec("idx74_gripper_r_inner_joint2", "rotZ", -1.0),
+    MimicSpec("idx75_gripper_r_outer_joint2", "rotZ", -1.0),
+    MimicSpec("idx76_gripper_r_right_support_joint", "rotZ", -1.0),
+)
+
+G2_PLACE_LINKS = (
+    "gripper_r_base_link",
+    "gripper_r_inner_link1",
+    "gripper_r_outer_link1",
+)
+G2_PLACE_JOINTS = (
+    "idx71_gripper_r_inner_joint1",
+    "idx81_gripper_r_outer_joint1",
+)
+G2_PLACE_LIMITS = {
+    "idx71_gripper_r_inner_joint1": (0.0, 0.02500000037252903),
+    "idx81_gripper_r_outer_joint1": (0.0, 0.02500000037252903),
+}
+G2_PLACE_MIMICS = (
+    MimicSpec("idx81_gripper_r_outer_joint1", "transY", 1.0),
+)
+
+PROFILES: dict[str, GripperProfile] = {
+    "g2_omnipicker": GripperProfile(
+        name="g2_omnipicker",
+        config_name="robot_g2_omnipicker_gripper",
+        robot_stage=Path("robot/G2_omnipicker/robot_fix.usda"),
+        geometry_stage=Path("robot/G2_omnipicker/configuration/robot_physics.usd"),
+        output=Path("bots/robot_g2_omnipicker_gripper.usd"),
+        report=Path("debug_output/usd_inspect/g2_omnipicker_from_robot_fix.json"),
+        base_link="gripper_r_base_link",
+        finger_colliders=("gripper_r_inner_link4", "gripper_r_outer_link4"),
+        links=OMNIPICKER_LINKS,
+        joints=OMNIPICKER_JOINTS,
+        active_drive=DriveSpec("idx71_gripper_r_inner_joint1", "angular", 10.0, 1.0, 50.0),
+        limit_overrides=OMNIPICKER_LIMITS,
+        mimic_joints=OMNIPICKER_MIMICS,
+        loop_followers=OMNIPICKER_LOOP_FOLLOWERS,
+        dropped_joints=(
+            "idx93_gripper_r_outer_joint2",
+            "idx94_gripper_r_inner_joint2",
+        ),
+        bite=0.016,
+    ),
+    "g1_omnipicker": GripperProfile(
+        name="g1_omnipicker",
+        config_name="robot_g1_omnipicker_gripper",
+        robot_stage=Path("robot/G1_omnipicker/configuration/robot_physics.usd"),
+        geometry_stage=Path("robot/G1_omnipicker/configuration/robot_physics.usd"),
+        output=Path("bots/robot_g1_omnipicker_gripper.usd"),
+        report=Path("debug_output/usd_inspect/g1_omnipicker_from_robot.json"),
+        base_link="gripper_r_base_link",
+        finger_colliders=("gripper_r_inner_link4", "gripper_r_outer_link4"),
+        links=OMNIPICKER_LINKS,
+        joints=OMNIPICKER_JOINTS,
+        active_drive=DriveSpec("idx71_gripper_r_inner_joint1", "angular", 10.0, 1.0, 50.0),
+        limit_overrides=OMNIPICKER_LIMITS,
+        mimic_joints=OMNIPICKER_MIMICS,
+        loop_followers=OMNIPICKER_LOOP_FOLLOWERS,
+        dropped_joints=(
+            "idx93_gripper_r_outer_joint2",
+            "idx94_gripper_r_inner_joint2",
+        ),
+        bite=0.016,
+    ),
+    "g1_120s": GripperProfile(
+        name="g1_120s",
+        config_name="robot_g1_120s_gripper",
+        robot_stage=Path("robot/G1_120s/configuration/G1_120s_physics.usd"),
+        geometry_stage=Path("robot/G1_120s/configuration/G1_120s_physics.usd"),
+        output=Path("bots/robot_g1_120s_gripper.usd"),
+        report=Path("debug_output/usd_inspect/g1_120s_from_robot.json"),
+        base_link="gripper_r_base_link",
+        finger_colliders=("gripper_r_inner_link5", "gripper_r_outer_link5"),
+        links=G1_120S_LINKS,
+        joints=G1_120S_JOINTS,
+        active_drive=DriveSpec("idx71_gripper_r_inner_joint1", "angular", 10.0, 1.0, 50.0),
+        limit_overrides=G1_120S_LIMITS,
+        mimic_joints=G1_120S_MIMICS,
+        dropped_joints=(
+            "idx93_gripper_r_outer_joint0",
+            "idx94_gripper_r_inner_joint0",
+        ),
+        bite=0.018,
+    ),
+    "g2_90d": GripperProfile(
+        name="g2_90d",
+        config_name="robot_g2_90d_gripper",
+        robot_stage=Path("robot/G2_90d/configuration/robot_physics.usd"),
+        geometry_stage=Path("robot/G2_90d/configuration/robot_physics.usd"),
+        output=Path("bots/robot_g2_90d_gripper.usd"),
+        report=Path("debug_output/usd_inspect/g2_90d_from_robot.json"),
+        base_link="gripper_r_base_link",
+        finger_colliders=("gripper_r_left_support_link", "gripper_r_right_support_link"),
+        links=G2_90D_LINKS,
+        joints=G2_90D_JOINTS,
+        active_drive=DriveSpec("idx71_gripper_r_inner_joint1", "angular", 10.0, 1.0, 50.0),
+        limit_overrides=G2_90D_LIMITS,
+        mimic_joints=G2_90D_MIMICS,
+        visual_collision_fallback_links=frozenset(
+            {
+                "gripper_r_left_inner_link",
+                "gripper_r_left_outer_link",
+                "gripper_r_left_support_link",
+                "gripper_r_right_inner_link",
+                "gripper_r_right_outer_link",
+                "gripper_r_right_support_link",
+            }
+        ),
+        bite=0.018,
+    ),
+    "g2_place_workpiece": GripperProfile(
+        name="g2_place_workpiece",
+        config_name="robot_g2_place_workpiece_gripper",
+        robot_stage=Path("robot/G2_place_workpiece/configuration/robot_physics.usd"),
+        geometry_stage=Path("robot/G2_place_workpiece/configuration/robot_physics.usd"),
+        output=Path("bots/robot_g2_place_workpiece_gripper.usd"),
+        report=Path("debug_output/usd_inspect/g2_place_workpiece_from_robot.json"),
+        base_link="gripper_r_base_link",
+        finger_colliders=("gripper_r_inner_link1", "gripper_r_outer_link1"),
+        links=G2_PLACE_LINKS,
+        joints=G2_PLACE_JOINTS,
+        active_drive=DriveSpec("idx71_gripper_r_inner_joint1", "linear", 100.0, 1.0, 500.0),
+        limit_overrides=G2_PLACE_LIMITS,
+        mimic_joints=G2_PLACE_MIMICS,
+        bite=0.012,
+    ),
+}
+
+
 def open_stage(path: Path) -> Usd.Stage:
     stage = Usd.Stage.Open(str(path), load=Usd.Stage.LoadAll)
     if stage is None:
@@ -99,6 +382,14 @@ def copy_spec(src_layer: Sdf.Layer, src: str, dst_layer: Sdf.Layer, dst: str) ->
         raise RuntimeError(f"Missing source USD spec: {src}")
     if not Sdf.CopySpec(src_layer, Sdf.Path(src), dst_layer, Sdf.Path(dst)):
         raise RuntimeError(f"Failed to copy USD spec {src} -> {dst}")
+
+
+def copy_spec_if_exists(src_layer: Sdf.Layer, src: str, dst_layer: Sdf.Layer, dst: str) -> bool:
+    if not path_exists(src_layer, src):
+        return False
+    if not Sdf.CopySpec(src_layer, Sdf.Path(src), dst_layer, Sdf.Path(dst)):
+        raise RuntimeError(f"Failed to copy USD spec {src} -> {dst}")
+    return True
 
 
 def authored_api_schemas(prim: Usd.Prim) -> list[str]:
@@ -182,6 +473,8 @@ def set_quatf_attr(prim: Usd.Prim, attr_name: str, value: tuple[float, float, fl
 
 
 def set_joint_limits(prim: Usd.Prim, lower: float, upper: float) -> None:
+    if not prim:
+        raise RuntimeError("Cannot set limits on missing joint")
     set_float_attr(prim, "physics:lowerLimit", lower)
     set_float_attr(prim, "physics:upperLimit", upper)
 
@@ -251,6 +544,12 @@ def enable_collider_tree(collisions: Usd.Prim, physics_material_path: str) -> No
             apply_collision_api(prim, physics_material_path)
 
 
+def mesh_count(prim: Usd.Prim) -> int:
+    if not prim:
+        return 0
+    return sum(1 for descendant in Usd.PrimRange(prim) if descendant.GetTypeName() == "Mesh")
+
+
 def create_physics_material(stage: Usd.Stage, root_path: str) -> str:
     material_path = f"{root_path}/PhysicsMaterial"
     material = UsdPhysics.MaterialAPI.Apply(stage.DefinePrim(material_path, "Material"))
@@ -263,34 +562,49 @@ def create_physics_material(stage: Usd.Stage, root_path: str) -> str:
 def replace_link_geometry(
     stage: Usd.Stage,
     geometry_layer: Sdf.Layer,
-    root_path: str,
-    link_names: list[str],
+    profile: GripperProfile,
     physics_material_path: str,
     notes: list[str],
 ) -> None:
     dst_layer = stage.GetRootLayer()
-    for link_name in link_names:
-        link_path = f"{root_path}/{link_name}"
+    for link_name in profile.links:
+        link_path = f"{profile.root_path}/{link_name}"
         for child in ("visuals", "collisions"):
             child_path = f"{link_path}/{child}"
             if stage.GetPrimAtPath(child_path):
                 stage.RemovePrim(child_path)
 
         copy_spec(geometry_layer, f"/visuals/{link_name}", dst_layer, f"{link_path}/visuals")
-        copy_spec(geometry_layer, f"/colliders/{link_name}", dst_layer, f"{link_path}/collisions")
+        copied_collider = copy_spec_if_exists(
+            geometry_layer,
+            f"/colliders/{link_name}",
+            dst_layer,
+            f"{link_path}/collisions",
+        )
 
         visuals = stage.GetPrimAtPath(f"{link_path}/visuals")
         collisions = stage.GetPrimAtPath(f"{link_path}/collisions")
+        if not copied_collider or mesh_count(collisions) == 0:
+            if link_name not in profile.visual_collision_fallback_links:
+                raise RuntimeError(
+                    f"{profile.name}: /colliders/{link_name} has no mesh and visual fallback is not enabled"
+                )
+            if collisions:
+                stage.RemovePrim(collisions.GetPath())
+            copy_spec(geometry_layer, f"/visuals/{link_name}", dst_layer, f"{link_path}/collisions")
+            collisions = stage.GetPrimAtPath(f"{link_path}/collisions")
+            notes.append(f"Used /visuals/{link_name} as collision fallback because /colliders/{link_name} is empty")
+
         strip_descendant_composition_arcs(visuals)
         strip_descendant_composition_arcs(collisions)
         strip_visual_collision_and_materials(visuals)
         enable_collider_tree(collisions, physics_material_path)
-        notes.append(f"Replaced geometry for {link_name} from /visuals and /colliders libraries")
+        notes.append(f"Installed geometry for {link_name}")
 
 
-def remove_sensor_descendants(stage: Usd.Stage, root_path: str, link_names: list[str], notes: list[str]) -> None:
-    for link_name in link_names:
-        link = stage.GetPrimAtPath(f"{root_path}/{link_name}")
+def remove_sensor_descendants(stage: Usd.Stage, profile: GripperProfile, notes: list[str]) -> None:
+    for link_name in profile.links:
+        link = stage.GetPrimAtPath(f"{profile.root_path}/{link_name}")
         if not link:
             continue
         for prim in reversed(list(Usd.PrimRange(link))):
@@ -307,71 +621,74 @@ def remove_sensor_descendants(stage: Usd.Stage, root_path: str, link_names: list
                 stage.RemovePrim(prim.GetPath())
 
 
-def rebase_to_base_frame(stage: Usd.Stage, root_path: str, link_names: list[str], notes: list[str]) -> None:
-    root = stage.GetPrimAtPath(root_path)
-    base = stage.GetPrimAtPath(f"{root_path}/{BASE_LINK}")
+def rebase_to_base_frame(stage: Usd.Stage, profile: GripperProfile, notes: list[str]) -> None:
+    root = stage.GetPrimAtPath(profile.root_path)
+    base = stage.GetPrimAtPath(f"{profile.root_path}/{profile.base_link}")
     if not root or not base:
-        raise RuntimeError(f"Missing root/base for rebase: {root_path}/{BASE_LINK}")
+        raise RuntimeError(f"Missing root/base for rebase: {profile.root_path}/{profile.base_link}")
 
     cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     base_world_inv = cache.GetLocalToWorldTransform(base).GetInverse()
     link_matrices: dict[str, Gf.Matrix4d] = {}
-    for link_name in link_names:
-        link = stage.GetPrimAtPath(f"{root_path}/{link_name}")
+    for link_name in profile.links:
+        link = stage.GetPrimAtPath(f"{profile.root_path}/{link_name}")
         if link:
             link_matrices[link_name] = cache.GetLocalToWorldTransform(link) * base_world_inv
 
     set_common_xform_from_matrix(root, Gf.Matrix4d(1.0))
     for link_name, matrix in link_matrices.items():
-        set_common_xform_from_matrix(stage.GetPrimAtPath(f"{root_path}/{link_name}"), matrix)
-    notes.append("Rebased gripper root to gripper_r_base_link")
+        set_common_xform_from_matrix(stage.GetPrimAtPath(f"{profile.root_path}/{link_name}"), matrix)
+    notes.append(f"Rebased gripper root to {profile.base_link}")
 
 
-def copy_required_articulation(robot_layer: Sdf.Layer, stage: Usd.Stage, notes: list[str]) -> None:
+def copy_required_articulation(robot_layer: Sdf.Layer, stage: Usd.Stage, profile: GripperProfile, notes: list[str]) -> None:
     dst_layer = stage.GetRootLayer()
-    root = stage.DefinePrim(ROOT_PATH, "Xform")
+    root = stage.DefinePrim(profile.root_path, "Xform")
     set_api_schemas(root, ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"])
 
-    for link in GRIPPER_LINKS:
-        copy_spec(robot_layer, f"{ROOT_PATH}/{link}", dst_layer, f"{ROOT_PATH}/{link}")
-        strip_descendant_composition_arcs(stage.GetPrimAtPath(f"{ROOT_PATH}/{link}"))
-        notes.append(f"Copied articulation link metadata: {link}")
+    for link in profile.links:
+        copy_spec(robot_layer, f"{profile.source_root}/{link}", dst_layer, f"{profile.root_path}/{link}")
+        strip_descendant_composition_arcs(stage.GetPrimAtPath(f"{profile.root_path}/{link}"))
+        notes.append(f"Copied link metadata: {link}")
 
-    stage.DefinePrim(f"{ROOT_PATH}/joints", "Xform")
-    for joint in MAIN_JOINTS:
-        copy_spec(robot_layer, f"{ROOT_PATH}/joints/{joint}", dst_layer, f"{ROOT_PATH}/joints/{joint}")
-        strip_descendant_composition_arcs(stage.GetPrimAtPath(f"{ROOT_PATH}/joints/{joint}"))
+    stage.DefinePrim(f"{profile.root_path}/joints", "Xform")
+    for joint in profile.joints:
+        copy_spec(robot_layer, f"{profile.source_root}/joints/{joint}", dst_layer, f"{profile.root_path}/joints/{joint}")
+        strip_descendant_composition_arcs(stage.GetPrimAtPath(f"{profile.root_path}/joints/{joint}"))
         notes.append(f"Copied joint: {joint}")
 
-    notes.append(
-        "Dropped spherical closed-loop constraints and rewired link2 bodies as base mimic followers: "
-        + ", ".join(REMOVED_CLOSED_LOOP_JOINTS)
-    )
+    if profile.dropped_joints:
+        notes.append("Dropped closed-loop/sensor/non-gripper joints: " + ", ".join(profile.dropped_joints))
 
 
-def create_root_joint(stage: Usd.Stage, root_path: str, notes: list[str]) -> None:
-    joint = UsdPhysics.FixedJoint.Define(stage, f"{root_path}/root_joint").GetPrim()
+def create_root_joint(stage: Usd.Stage, profile: GripperProfile, notes: list[str]) -> None:
+    joint = UsdPhysics.FixedJoint.Define(stage, f"{profile.root_path}/root_joint").GetPrim()
     set_relationship_targets(joint, "physics:body0", [])
-    set_relationship_targets(joint, "physics:body1", [f"{root_path}/{BASE_LINK}"])
-    notes.append(f"Created root_joint body1 -> {root_path}/{BASE_LINK}")
+    set_relationship_targets(joint, "physics:body1", [f"{profile.root_path}/{profile.base_link}"])
+    notes.append(f"Created root_joint body1 -> {profile.root_path}/{profile.base_link}")
 
 
-def configure_active_drive(stage: Usd.Stage, joint_path: str, stiffness: float, damping: float, max_force: float) -> None:
+def configure_active_drive(stage: Usd.Stage, profile: GripperProfile) -> None:
+    spec = profile.active_drive
+    joint_path = f"{profile.root_path}/joints/{spec.joint}"
     joint = stage.GetPrimAtPath(joint_path)
     if not joint:
         raise RuntimeError(f"Missing active drive joint: {joint_path}")
-    remove_api_schema_prefixes(joint, ("PhysxMimicJointAPI:",))
-    remove_properties_by_prefix(joint, ("physxMimicJoint:",))
-    ensure_api_schema(joint, "PhysicsDriveAPI:angular")
-    set_float_attr(joint, "drive:angular:physics:stiffness", stiffness)
-    set_float_attr(joint, "drive:angular:physics:damping", damping)
-    set_float_attr(joint, "drive:angular:physics:maxForce", max_force)
-    set_float_attr(joint, "drive:angular:physics:targetPosition", 0.0)
-    set_float_attr(joint, "drive:angular:physics:targetVelocity", 0.0)
-    set_token_attr(joint, "drive:angular:physics:type", "force")
+    remove_api_schema_prefixes(joint, ("PhysicsDriveAPI:", "PhysxMimicJointAPI:"))
+    remove_properties_by_prefix(joint, ("drive:angular:", "drive:linear:", "physxMimicJoint:"))
+    ensure_api_schema(joint, f"PhysicsDriveAPI:{spec.kind}")
+    set_float_attr(joint, f"drive:{spec.kind}:physics:stiffness", spec.stiffness)
+    set_float_attr(joint, f"drive:{spec.kind}:physics:damping", spec.damping)
+    set_float_attr(joint, f"drive:{spec.kind}:physics:maxForce", spec.max_force)
+    set_float_attr(joint, f"drive:{spec.kind}:physics:targetPosition", 0.0)
+    set_float_attr(joint, f"drive:{spec.kind}:physics:targetVelocity", 0.0)
+    set_token_attr(joint, f"drive:{spec.kind}:physics:type", "force")
 
 
-def configure_mimic_follower(stage: Usd.Stage, joint_path: str, reference_joint_path: str, gearing: float) -> None:
+def configure_mimic_follower(stage: Usd.Stage, profile: GripperProfile, spec: MimicSpec) -> None:
+    joint_path = f"{profile.root_path}/joints/{spec.joint}"
+    reference_name = spec.reference_joint or profile.active_drive.joint
+    reference_joint_path = f"{profile.root_path}/joints/{reference_name}"
     joint = stage.GetPrimAtPath(joint_path)
     if not joint:
         raise RuntimeError(f"Missing mimic follower joint: {joint_path}")
@@ -379,105 +696,70 @@ def configure_mimic_follower(stage: Usd.Stage, joint_path: str, reference_joint_
         raise RuntimeError(f"Missing mimic reference joint: {reference_joint_path}")
     remove_api_schema_prefixes(joint, ("PhysicsDriveAPI:", "PhysxMimicJointAPI:"))
     remove_properties_by_prefix(joint, ("drive:angular:", "drive:linear:", "physxMimicJoint:"))
-    ensure_api_schema(joint, "PhysxMimicJointAPI:rotZ")
-    set_relationship_targets(joint, "physxMimicJoint:rotZ:referenceJoint", [reference_joint_path])
-    set_float_attr(joint, "physxMimicJoint:rotZ:gearing", gearing)
-    set_float_attr(joint, "physxMimicJoint:rotZ:offset", 0.0)
-    set_float_attr(joint, "physxMimicJoint:rotZ:naturalFrequency", 0.0)
-    set_float_attr(joint, "physxMimicJoint:rotZ:dampingRatio", 0.0)
+    ensure_api_schema(joint, f"PhysxMimicJointAPI:{spec.axis}")
+    prefix = f"physxMimicJoint:{spec.axis}"
+    set_relationship_targets(joint, f"{prefix}:referenceJoint", [reference_joint_path])
+    set_float_attr(joint, f"{prefix}:gearing", spec.gearing)
+    set_float_attr(joint, f"{prefix}:offset", spec.offset)
+    set_float_attr(joint, f"{prefix}:naturalFrequency", 0.0)
+    set_float_attr(joint, f"{prefix}:dampingRatio", 0.0)
 
 
 def configure_passive_joint(stage: Usd.Stage, joint_path: str) -> None:
     joint = stage.GetPrimAtPath(joint_path)
     if not joint:
         raise RuntimeError(f"Missing passive joint: {joint_path}")
-    remove_api_schema_prefixes(joint, ("PhysicsDriveAPI:",))
-    remove_properties_by_prefix(joint, ("drive:angular:", "drive:linear:"))
+    remove_api_schema_prefixes(joint, ("PhysicsDriveAPI:", "PhysxMimicJointAPI:"))
+    remove_properties_by_prefix(joint, ("drive:angular:", "drive:linear:", "physxMimicJoint:"))
 
 
-def configure_base_loop_follower(
-    stage: Usd.Stage,
-    joint_path: str,
-    body1_path: str,
-    local_pos0: tuple[float, float, float],
-    local_pos1: tuple[float, float, float],
-    local_rot0: tuple[float, float, float, float],
-    local_rot1: tuple[float, float, float, float],
-) -> None:
+def configure_base_loop_follower(stage: Usd.Stage, profile: GripperProfile, spec: LoopFollowerSpec) -> None:
+    joint_path = f"{profile.root_path}/joints/{spec.joint}"
     joint = stage.GetPrimAtPath(joint_path)
     if not joint:
         raise RuntimeError(f"Missing loop follower joint: {joint_path}")
-    set_relationship_targets(joint, "physics:body0", [f"{ROOT_PATH}/{BASE_LINK}"])
-    set_relationship_targets(joint, "physics:body1", [body1_path])
-    set_vec3_attr(joint, "physics:localPos0", local_pos0)
-    set_vec3_attr(joint, "physics:localPos1", local_pos1)
-    set_quatf_attr(joint, "physics:localRot0", local_rot0)
-    set_quatf_attr(joint, "physics:localRot1", local_rot1)
-    set_token_attr(joint, "physics:axis", "Z")
+    set_relationship_targets(joint, "physics:body0", [f"{profile.root_path}/{profile.base_link}"])
+    set_relationship_targets(joint, "physics:body1", [f"{profile.root_path}/{spec.body1}"])
+    set_vec3_attr(joint, "physics:localPos0", spec.local_pos0)
+    set_vec3_attr(joint, "physics:localPos1", spec.local_pos1)
+    set_quatf_attr(joint, "physics:localRot0", spec.local_rot0)
+    set_quatf_attr(joint, "physics:localRot1", spec.local_rot1)
+    set_token_attr(joint, "physics:axis", spec.axis)
 
 
-def normalize_to_standalone_omnipicker(stage: Usd.Stage, notes: list[str]) -> None:
-    joints = f"{ROOT_PATH}/joints"
-    active = f"{joints}/idx71_gripper_r_inner_joint1"
-    configure_active_drive(stage, active, stiffness=10.0, damping=1.0, max_force=50.0)
+def normalize_actuation(stage: Usd.Stage, profile: GripperProfile, notes: list[str]) -> None:
+    joints_path = f"{profile.root_path}/joints"
+    configure_active_drive(stage, profile)
 
-    limit_overrides = {
-        "idx71_gripper_r_inner_joint1": (0.0, 57.2957763671875),
-        "idx72_gripper_r_inner_joint3": (-0.22918309271335602, 1.3750985860824585),
-        "idx73_gripper_r_inner_joint4": (-4.583662033081055, 27.501972198486328),
-        "idx79_gripper_r_inner_joint0": (-17.188732147216797, 103.13239288330078),
-        "idx81_gripper_r_outer_joint1": (-11.459155082702637, 68.75492858886719),
-        "idx82_gripper_r_outer_joint3": (-0.22918309271335602, 1.3750985860824585),
-        "idx83_gripper_r_outer_joint4": (-4.583662033081055, 27.501972198486328),
-        "idx89_gripper_r_outer_joint0": (-17.188732147216797, 103.13239288330078),
-    }
-    mimic_gearing = {
-        "idx72_gripper_r_inner_joint3": -0.02,
-        "idx73_gripper_r_inner_joint4": -0.4,
-        "idx79_gripper_r_inner_joint0": -1.5,
-        "idx81_gripper_r_outer_joint1": -1.0,
-        "idx82_gripper_r_outer_joint3": -0.02,
-        "idx83_gripper_r_outer_joint4": -0.4,
-        "idx89_gripper_r_outer_joint0": -1.5,
-    }
-    for joint_name, (lower, upper) in limit_overrides.items():
-        set_joint_limits(stage.GetPrimAtPath(f"{joints}/{joint_name}"), lower, upper)
-    for joint_name, gearing in mimic_gearing.items():
-        configure_mimic_follower(stage, f"{joints}/{joint_name}", active, gearing)
-    configure_base_loop_follower(
-        stage,
-        f"{joints}/idx79_gripper_r_inner_joint0",
-        f"{ROOT_PATH}/gripper_r_inner_link2",
-        local_pos0=(0.0, -0.022, 0.073),
-        local_pos1=(-0.032, 0.01, 0.0),
-        local_rot0=(-0.004648268, -0.70709145, 0.004648268, -0.70709145),
-        local_rot1=(1.0, 0.0, 0.0, 0.0),
+    for joint_name, (lower, upper) in profile.limit_overrides.items():
+        set_joint_limits(stage.GetPrimAtPath(f"{joints_path}/{joint_name}"), lower, upper)
+
+    mimic_names = set()
+    for mimic in profile.mimic_joints:
+        configure_mimic_follower(stage, profile, mimic)
+        mimic_names.add(mimic.joint)
+
+    for follower in profile.loop_followers:
+        configure_base_loop_follower(stage, profile, follower)
+
+    for joint_name in profile.joints:
+        if joint_name == profile.active_drive.joint or joint_name in mimic_names:
+            continue
+        joint = stage.GetPrimAtPath(f"{joints_path}/{joint_name}")
+        if joint and joint.GetTypeName() != "PhysicsFixedJoint":
+            configure_passive_joint(stage, f"{joints_path}/{joint_name}")
+
+    notes.append(
+        f"Normalized actuation: active={profile.active_drive.joint}, "
+        f"mimics={[m.joint for m in profile.mimic_joints]}"
     )
-    configure_base_loop_follower(
-        stage,
-        f"{joints}/idx89_gripper_r_outer_joint0",
-        f"{ROOT_PATH}/gripper_r_outer_link2",
-        local_pos0=(0.0, 0.022, 0.073),
-        local_pos1=(-0.032, -0.01, 0.0),
-        local_rot0=(-0.004648268, 0.70709145, -0.004648268, -0.70709145),
-        local_rot1=(0.0, 0.0, 1.0, 0.0),
-    )
-    notes.append("Normalized actuation to standalone OmniPicker single-drive mimic graph")
-
-
-def preserve_robot_fix_actuation(stage: Usd.Stage, notes: list[str]) -> None:
-    drive_joints = []
-    for prim in stage.Traverse():
-        if any(schema.startswith("PhysicsDriveAPI:") for schema in authored_api_schemas(prim)):
-            drive_joints.append(str(prim.GetPath()))
-    notes.append(f"Preserved robot_fix actuation; drive joints: {drive_joints}")
 
 
 def relationship_target_exists(stage: Usd.Stage, target: Sdf.Path) -> bool:
     return bool(stage.GetPrimAtPath(target.GetPrimPath()))
 
 
-def remove_or_repair_material_relationships(stage: Usd.Stage, root_path: str, notes: list[str]) -> None:
+def remove_or_repair_material_relationships(stage: Usd.Stage, notes: list[str]) -> None:
     for prim in stage.Traverse():
         for rel in prim.GetRelationships():
             old_targets = list(rel.GetTargets())
@@ -493,13 +775,7 @@ def remove_or_repair_material_relationships(stage: Usd.Stage, root_path: str, no
                 raise RuntimeError(f"Joint/body relationship has missing target on {prim.GetPath()}: {missing}")
 
 
-def mesh_count(prim: Usd.Prim) -> int:
-    if not prim:
-        return 0
-    return sum(1 for descendant in Usd.PrimRange(prim) if descendant.GetTypeName() == "Mesh")
-
-
-def summarize(stage: Usd.Stage, notes: list[str], output_path: Path) -> dict[str, object]:
+def summarize(stage: Usd.Stage, profile: GripperProfile, notes: list[str], output_path: Path) -> dict[str, object]:
     rigid_bodies: list[str] = []
     collision_meshes: list[str] = []
     visual_collision_meshes: list[str] = []
@@ -510,7 +786,13 @@ def summarize(stage: Usd.Stage, notes: list[str], output_path: Path) -> dict[str
     drive_joints: list[str] = []
     mimic_joints: list[str] = []
     link_collision_mesh_counts: dict[str, int] = {}
+    fallback_collision_links: list[str] = []
     external_arcs = 0
+
+    for link_name in profile.links:
+        collisions = stage.GetPrimAtPath(f"{profile.root_path}/{link_name}/collisions")
+        if collisions and mesh_count(collisions) > 0 and link_name in profile.visual_collision_fallback_links:
+            fallback_collision_links.append(link_name)
 
     for prim in stage.TraverseAll():
         path = str(prim.GetPath())
@@ -558,13 +840,15 @@ def summarize(stage: Usd.Stage, notes: list[str], output_path: Path) -> dict[str
 
     return {
         "ok": True,
-        "root": ROOT_PATH,
+        "profile": profile.name,
+        "config_name": profile.config_name,
+        "root": profile.root_path,
         "defaultPrim": str(stage.GetDefaultPrim().GetPath()) if stage.GetDefaultPrim() else None,
         "metersPerUnit": UsdGeom.GetStageMetersPerUnit(stage),
         "upAxis": str(UsdGeom.GetStageUpAxis(stage)),
-        "base_frame": BASE_LINK,
-        "finger_colliders": list(FINGER_COLLIDERS),
-        "link_names": GRIPPER_LINKS,
+        "base_frame": profile.base_link,
+        "finger_colliders": list(profile.finger_colliders),
+        "link_names": list(profile.links),
         "rigid_bodies": rigid_bodies,
         "collision_meshes": collision_meshes,
         "visual_collision_meshes": visual_collision_meshes,
@@ -575,25 +859,28 @@ def summarize(stage: Usd.Stage, notes: list[str], output_path: Path) -> dict[str
         "invalid_relationship_targets": invalid_relationship_targets,
         "drive_joints": drive_joints,
         "mimic_joints": mimic_joints,
-        "base_collision_mesh_count": link_collision_mesh_counts.get(BASE_LINK, 0),
-        "finger_collision_mesh_counts": {name: link_collision_mesh_counts.get(name, 0) for name in FINGER_COLLIDERS},
+        "base_collision_mesh_count": link_collision_mesh_counts.get(profile.base_link, 0),
+        "finger_collision_mesh_counts": {
+            name: link_collision_mesh_counts.get(name, 0) for name in profile.finger_colliders
+        },
         "link_collision_mesh_counts": link_collision_mesh_counts,
+        "fallback_collision_links": fallback_collision_links,
         "recommended_graspdatagen_config": {
-            "robot_g2_omnipicker_gripper": {
+            profile.config_name: {
                 "gripper_file": str(output_path),
-                "finger_colliders": list(FINGER_COLLIDERS),
-                "base_frame": BASE_LINK,
-                "bite": 0.016,
-                "pinch_width_resolution": 8,
+                "finger_colliders": list(profile.finger_colliders),
+                "base_frame": profile.base_link,
+                "bite": profile.bite,
+                "pinch_width_resolution": profile.pinch_width_resolution,
             }
         },
         "notes": notes,
     }
 
 
-def validate_report(report: dict[str, object], expected_drive_count: int) -> None:
+def validate_report(report: dict[str, object], profile: GripperProfile) -> None:
     errors: list[str] = []
-    if report["defaultPrim"] != ROOT_PATH:
+    if report["defaultPrim"] != profile.root_path:
         errors.append(f"defaultPrim={report['defaultPrim']}")
     if report["metersPerUnit"] != 1.0:
         errors.append(f"metersPerUnit={report['metersPerUnit']}")
@@ -611,103 +898,159 @@ def validate_report(report: dict[str, object], expected_drive_count: int) -> Non
         errors.append(f"camera remnants={report['cameras'][:5]}")
     if report["invalid_relationship_targets"]:
         errors.append(f"invalid_relationship_targets={report['invalid_relationship_targets'][:5]}")
-    if len(report["drive_joints"]) != expected_drive_count:
-        errors.append(f"expected {expected_drive_count} drive joint(s), got {report['drive_joints']}")
+    if len(report["drive_joints"]) != 1:
+        errors.append(f"expected one drive joint, got {report['drive_joints']}")
     if report["base_collision_mesh_count"] == 0:
         errors.append("base frame has no collision mesh")
-    missing_fingers = [
-        name for name, count in report["finger_collision_mesh_counts"].items() if count == 0
-    ]
+    missing_fingers = [name for name, count in report["finger_collision_mesh_counts"].items() if count == 0]
     if missing_fingers:
         errors.append(f"finger colliders missing collision mesh: {missing_fingers}")
     if errors:
-        raise RuntimeError("extraction validation failed: " + "; ".join(errors))
+        raise RuntimeError(f"{profile.name}: extraction validation failed: " + "; ".join(errors))
 
 
-def extract(args: argparse.Namespace) -> dict[str, object]:
-    robot_stage_path = Path(args.robot_stage)
-    geometry_stage_path = Path(args.geometry_stage)
-    output_path = Path(args.output)
-    report_path = Path(args.report)
+def with_overrides(profile: GripperProfile, args: argparse.Namespace) -> GripperProfile:
+    if args.robot_stage:
+        profile = dataclass_replace(profile, robot_stage=Path(args.robot_stage))
+    if args.geometry_stage:
+        profile = dataclass_replace(profile, geometry_stage=Path(args.geometry_stage))
+    if args.output:
+        profile = dataclass_replace(profile, output=Path(args.output))
+    if args.report:
+        profile = dataclass_replace(profile, report=Path(args.report))
+    return profile
 
-    if output_path.exists() and not args.force:
-        raise FileExistsError(f"{output_path} already exists. Pass --force to overwrite it.")
 
-    robot_stage = open_stage(robot_stage_path)
-    geometry_stage = open_stage(geometry_stage_path)
+def dataclass_replace(profile: GripperProfile, **changes: object) -> GripperProfile:
+    data = {
+        "name": profile.name,
+        "config_name": profile.config_name,
+        "robot_stage": profile.robot_stage,
+        "geometry_stage": profile.geometry_stage,
+        "output": profile.output,
+        "report": profile.report,
+        "base_link": profile.base_link,
+        "finger_colliders": profile.finger_colliders,
+        "links": profile.links,
+        "joints": profile.joints,
+        "active_drive": profile.active_drive,
+        "bite": profile.bite,
+        "pinch_width_resolution": profile.pinch_width_resolution,
+        "source_root": profile.source_root,
+        "root_path": profile.root_path,
+        "limit_overrides": profile.limit_overrides,
+        "mimic_joints": profile.mimic_joints,
+        "loop_followers": profile.loop_followers,
+        "dropped_joints": profile.dropped_joints,
+        "visual_collision_fallback_links": profile.visual_collision_fallback_links,
+    }
+    data.update(changes)
+    return GripperProfile(**data)
+
+
+def extract_profile(profile: GripperProfile, force: bool) -> dict[str, object]:
+    if profile.output.exists() and not force:
+        raise FileExistsError(f"{profile.output} already exists. Pass --force to overwrite it.")
+    if not profile.robot_stage.exists():
+        raise FileNotFoundError(profile.robot_stage)
+    if not profile.geometry_stage.exists():
+        raise FileNotFoundError(profile.geometry_stage)
+
+    robot_stage = open_stage(profile.robot_stage)
+    geometry_stage = open_stage(profile.geometry_stage)
     robot_layer = robot_stage.Flatten()
     geometry_layer = geometry_stage.Flatten()
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        output_path.unlink()
-    stage = Usd.Stage.CreateNew(str(output_path))
+    profile.output.parent.mkdir(parents=True, exist_ok=True)
+    if profile.output.exists():
+        profile.output.unlink()
+    stage = Usd.Stage.CreateNew(str(profile.output))
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
 
     notes: list[str] = [
-        f"robot_stage={robot_stage_path}",
-        f"geometry_stage={geometry_stage_path}",
-        "Collision geometry is copied only from /colliders, never from robot_fix visuals.",
+        f"profile={profile.name}",
+        f"robot_stage={profile.robot_stage}",
+        f"geometry_stage={profile.geometry_stage}",
+        "Collision geometry is installed under /collisions and stripped from /visuals.",
     ]
-    copy_required_articulation(robot_layer, stage, notes)
-    remove_sensor_descendants(stage, ROOT_PATH, GRIPPER_LINKS, notes)
-    rebase_to_base_frame(stage, ROOT_PATH, GRIPPER_LINKS, notes)
-    physics_material_path = create_physics_material(stage, ROOT_PATH)
-    replace_link_geometry(stage, geometry_layer, ROOT_PATH, GRIPPER_LINKS, physics_material_path, notes)
-    create_root_joint(stage, ROOT_PATH, notes)
-
-    if args.actuation_mode == "standalone":
-        normalize_to_standalone_omnipicker(stage, notes)
-        expected_drive_count = 1
-    else:
-        preserve_robot_fix_actuation(stage, notes)
-        expected_drive_count = 1
-
-    remove_or_repair_material_relationships(stage, ROOT_PATH, notes)
-    stage.SetDefaultPrim(stage.GetPrimAtPath(ROOT_PATH))
+    copy_required_articulation(robot_layer, stage, profile, notes)
+    remove_sensor_descendants(stage, profile, notes)
+    rebase_to_base_frame(stage, profile, notes)
+    physics_material_path = create_physics_material(stage, profile.root_path)
+    replace_link_geometry(stage, geometry_layer, profile, physics_material_path, notes)
+    create_root_joint(stage, profile, notes)
+    normalize_actuation(stage, profile, notes)
+    remove_or_repair_material_relationships(stage, notes)
+    stage.SetDefaultPrim(stage.GetPrimAtPath(profile.root_path))
     stage.GetRootLayer().Save()
 
-    stage = open_stage(output_path)
-    report = summarize(stage, notes, output_path)
-    report["output"] = str(output_path)
-    report["actuation_mode"] = args.actuation_mode
-    validate_report(report, expected_drive_count)
+    stage = open_stage(profile.output)
+    report = summarize(stage, profile, notes, profile.output)
+    report["output"] = str(profile.output)
+    report["report"] = str(profile.report)
+    validate_report(report, profile)
 
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    profile.report.parent.mkdir(parents=True, exist_ok=True)
+    profile.report.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     return report
+
+
+def selected_profiles(args: argparse.Namespace) -> list[GripperProfile]:
+    if args.all:
+        names = list(PROFILES)
+    else:
+        names = args.profile or ["g2_omnipicker"]
+
+    unknown = [name for name in names if name not in PROFILES]
+    if unknown:
+        raise ValueError(f"Unknown profile(s): {unknown}. Available: {sorted(PROFILES)}")
+
+    if len(names) > 1 and (args.robot_stage or args.geometry_stage or args.output or args.report):
+        raise ValueError("--robot-stage/--geometry-stage/--output/--report overrides require exactly one profile")
+
+    profiles = [PROFILES[name] for name in names]
+    if len(profiles) == 1:
+        profiles = [with_overrides(profiles[0], args)]
+    return profiles
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--robot-stage", default=str(DEFAULT_ROBOT_STAGE), help="Source robot_fix.usda stage.")
-    parser.add_argument("--geometry-stage", default=str(DEFAULT_GEOMETRY_STAGE), help="Stage that owns /visuals and /colliders libraries.")
-    parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output pure gripper USD.")
-    parser.add_argument("--report", default=str(DEFAULT_REPORT), help="JSON validation report path.")
     parser.add_argument(
-        "--actuation-mode",
-        choices=("standalone", "preserve-fix"),
-        default="standalone",
-        help="standalone matches bots/omnipicker single-drive mimic graph; preserve-fix keeps robot_fix joint authoring.",
+        "--profile",
+        action="append",
+        choices=sorted(PROFILES),
+        help="Profile to extract. Can be repeated. Defaults to g2_omnipicker.",
     )
-    parser.add_argument("--force", action="store_true", help="Overwrite --output if it already exists.")
+    parser.add_argument("--all", action="store_true", help="Extract all robot gripper profiles.")
+    parser.add_argument("--robot-stage", help="Override source articulation stage for a single profile.")
+    parser.add_argument("--geometry-stage", help="Override stage that owns /visuals and /colliders for a single profile.")
+    parser.add_argument("--output", help="Override output USD path for a single profile.")
+    parser.add_argument("--report", help="Override JSON report path for a single profile.")
+    parser.add_argument("--force", action="store_true", help="Overwrite output USD if it already exists.")
     args = parser.parse_args()
 
-    report = extract(args)
-    print(json.dumps(
-        {
-            "output": report["output"],
-            "report": str(Path(args.report)),
-            "actuation_mode": report["actuation_mode"],
-            "drive_joints": report["drive_joints"],
-            "finger_collision_mesh_counts": report["finger_collision_mesh_counts"],
-            "visual_collision_meshes": len(report["visual_collision_meshes"]),
-            "invalid_relationship_targets": len(report["invalid_relationship_targets"]),
-        },
-        indent=2,
-        ensure_ascii=False,
-    ))
+    reports = [extract_profile(profile, args.force) for profile in selected_profiles(args)]
+    print(
+        json.dumps(
+            [
+                {
+                    "profile": report["profile"],
+                    "output": report["output"],
+                    "report": report["report"],
+                    "drive_joints": report["drive_joints"],
+                    "finger_collision_mesh_counts": report["finger_collision_mesh_counts"],
+                    "fallback_collision_links": report["fallback_collision_links"],
+                    "visual_collision_meshes": len(report["visual_collision_meshes"]),
+                    "invalid_relationship_targets": len(report["invalid_relationship_targets"]),
+                }
+                for report in reports
+            ],
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":
