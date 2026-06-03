@@ -447,6 +447,11 @@ class GripperCreator:
                 gripper_data_out["bite_points"][i, approach_axis] = abs(gripper_data_out["bite_points"][i, approach_axis])
                 gripper_data_out["bite_points"][i, open_axis] = -gripper_data_out["bite_points"][i, open_axis]
             gripper_data_out["open_widths"] = gripper_data_out["bite_points"][:, open_axis]*2.0
+            finite_open_widths = gripper_data_out["open_widths"][np.isfinite(gripper_data_out["open_widths"])]
+            if finite_open_widths.size > 0 and np.max(finite_open_widths) <= 0.0:
+                print_red("Warning: Open widths were negative; flipping the open-axis sign convention for this gripper definition.")
+                gripper_data_out["bite_points"][:, open_axis] = -gripper_data_out["bite_points"][:, open_axis]
+                gripper_data_out["open_widths"] = -gripper_data_out["open_widths"]
             gripper_data_out["bodies"] = gripper_bodies
             gripper_data_out["body_transforms"] = body_transforms
             gripper_data_out["body_names"] = gripper.body_names
