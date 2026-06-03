@@ -454,15 +454,29 @@ def set_float_attr(prim: Usd.Prim, attr_name: str, value: float) -> None:
 def set_bool_attr(prim: Usd.Prim, attr_name: str, value: bool) -> None:
     attr = prim.GetAttribute(attr_name)
     if not attr:
-        attr = prim.CreateAttribute(attr_name, Sdf.ValueTypeNames.Bool)
+        attr = prim.CreateAttribute(attr_name, Sdf.ValueTypeNames.Bool, custom=False)
     attr.Set(bool(value))
 
 
 def set_int_attr(prim: Usd.Prim, attr_name: str, value: int) -> None:
     attr = prim.GetAttribute(attr_name)
     if not attr:
-        attr = prim.CreateAttribute(attr_name, Sdf.ValueTypeNames.Int)
+        attr = prim.CreateAttribute(attr_name, Sdf.ValueTypeNames.Int, custom=False)
     attr.Set(int(value))
+
+
+def set_schema_float_attr(prim: Usd.Prim, attr_name: str, value: float) -> None:
+    attr = prim.GetAttribute(attr_name)
+    if not attr:
+        attr = prim.CreateAttribute(attr_name, Sdf.ValueTypeNames.Float, custom=False)
+    attr.Set(float(value))
+
+
+def set_schema_relationship_targets(prim: Usd.Prim, rel_name: str, targets: Iterable[str]) -> None:
+    rel = prim.GetRelationship(rel_name)
+    if not rel:
+        rel = prim.CreateRelationship(rel_name, custom=False)
+    rel.SetTargets([Sdf.Path(target) for target in targets])
 
 
 def set_token_attr(prim: Usd.Prim, attr_name: str, value: str) -> None:
@@ -718,9 +732,9 @@ def configure_mimic_follower(stage: Usd.Stage, profile: GripperProfile, spec: Mi
     remove_properties_by_prefix(joint, ("drive:angular:", "drive:linear:", "physxMimicJoint:"))
     ensure_api_schema(joint, f"PhysxMimicJointAPI:{spec.axis}")
     prefix = f"physxMimicJoint:{spec.axis}"
-    set_relationship_targets(joint, f"{prefix}:referenceJoint", [reference_joint_path])
-    set_float_attr(joint, f"{prefix}:gearing", spec.gearing)
-    set_float_attr(joint, f"{prefix}:offset", spec.offset)
+    set_schema_relationship_targets(joint, f"{prefix}:referenceJoint", [reference_joint_path])
+    set_schema_float_attr(joint, f"{prefix}:gearing", spec.gearing)
+    set_schema_float_attr(joint, f"{prefix}:offset", spec.offset)
     set_float_attr(joint, f"{prefix}:naturalFrequency", 0.0)
     set_float_attr(joint, f"{prefix}:dampingRatio", 0.0)
 
