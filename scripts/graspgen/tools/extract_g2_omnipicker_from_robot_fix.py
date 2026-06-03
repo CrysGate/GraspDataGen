@@ -10,7 +10,7 @@ containers, collision APIs on visual meshes, closed-loop constraints, sensors,
 or multiple independent drives. This tool builds a pure gripper stage per
 profile:
 
-  * one articulation root at /genie;
+  * one articulation rooted at the fixed /genie/root_joint;
   * only right-hand gripper links and required joints;
   * visuals under each link's /visuals;
   * collision meshes under each link's /collisions;
@@ -451,6 +451,20 @@ def set_float_attr(prim: Usd.Prim, attr_name: str, value: float) -> None:
     attr.Set(float(value))
 
 
+def set_bool_attr(prim: Usd.Prim, attr_name: str, value: bool) -> None:
+    attr = prim.GetAttribute(attr_name)
+    if not attr:
+        attr = prim.CreateAttribute(attr_name, Sdf.ValueTypeNames.Bool)
+    attr.Set(bool(value))
+
+
+def set_int_attr(prim: Usd.Prim, attr_name: str, value: int) -> None:
+    attr = prim.GetAttribute(attr_name)
+    if not attr:
+        attr = prim.CreateAttribute(attr_name, Sdf.ValueTypeNames.Int)
+    attr.Set(int(value))
+
+
 def set_token_attr(prim: Usd.Prim, attr_name: str, value: str) -> None:
     attr = prim.GetAttribute(attr_name)
     if not attr:
@@ -643,8 +657,7 @@ def rebase_to_base_frame(stage: Usd.Stage, profile: GripperProfile, notes: list[
 
 def copy_required_articulation(robot_layer: Sdf.Layer, stage: Usd.Stage, profile: GripperProfile, notes: list[str]) -> None:
     dst_layer = stage.GetRootLayer()
-    root = stage.DefinePrim(profile.root_path, "Xform")
-    set_api_schemas(root, ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"])
+    stage.DefinePrim(profile.root_path, "Xform")
 
     for link in profile.links:
         copy_spec(robot_layer, f"{profile.source_root}/{link}", dst_layer, f"{profile.root_path}/{link}")
@@ -663,9 +676,16 @@ def copy_required_articulation(robot_layer: Sdf.Layer, stage: Usd.Stage, profile
 
 def create_root_joint(stage: Usd.Stage, profile: GripperProfile, notes: list[str]) -> None:
     joint = UsdPhysics.FixedJoint.Define(stage, f"{profile.root_path}/root_joint").GetPrim()
+    set_api_schemas(joint, ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"])
+    set_bool_attr(joint, "physxArticulation:enabledSelfCollisions", False)
+    set_int_attr(joint, "physxArticulation:solverPositionIterationCount", 32)
+    set_int_attr(joint, "physxArticulation:solverVelocityIterationCount", 1)
     set_relationship_targets(joint, "physics:body0", [])
     set_relationship_targets(joint, "physics:body1", [f"{profile.root_path}/{profile.base_link}"])
-    notes.append(f"Created root_joint body1 -> {profile.root_path}/{profile.base_link}")
+    notes.append(
+        f"Created stable articulation root_joint body1 -> {profile.root_path}/{profile.base_link} "
+        "(self collisions off, solver iterations 32/1)"
+    )
 
 
 def configure_active_drive(stage: Usd.Stage, profile: GripperProfile) -> None:
@@ -796,7 +816,12 @@ def summarize(stage: Usd.Stage, profile: GripperProfile, notes: list[str], outpu
 
     for prim in stage.TraverseAll():
         path = str(prim.GetPath())
-        if prim.GetTypeName() == "Camera" or "camera" in prim.GetName().lower() or prim.GetName().lower().startswith("cam"):
+        if (
+            prim.GetTypeName() in {"Camera", "IsaacContactSensor"}
+            or "camera" in prim.GetName().lower()
+            or prim.GetName().lower().startswith("cam")
+            or "contact_sensor" in prim.GetName().lower()
+        ):
             cameras.append(path)
 
         refs = prim.GetMetadata("references")
@@ -975,10 +1000,10 @@ def extract_profile(profile: GripperProfile, force: bool) -> dict[str, object]:
         "Collision geometry is installed under /collisions and stripped from /visuals.",
     ]
     copy_required_articulation(robot_layer, stage, profile, notes)
-    remove_sensor_descendants(stage, profile, notes)
     rebase_to_base_frame(stage, profile, notes)
     physics_material_path = create_physics_material(stage, profile.root_path)
     replace_link_geometry(stage, geometry_layer, profile, physics_material_path, notes)
+    remove_sensor_descendants(stage, profile, notes)
     create_root_joint(stage, profile, notes)
     normalize_actuation(stage, profile, notes)
     remove_or_repair_material_relationships(stage, notes)
