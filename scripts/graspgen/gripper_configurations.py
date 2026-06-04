@@ -148,6 +148,13 @@ GRIPPER_CONFIGS = {
         'bite': 0.016,
         'pinch_width_resolution': 8,
     },
+    'g2_right_omnipicker_gripper': {
+        'gripper_file': 'bots/g2_right_omnipicker_gripper.usd',
+        'finger_colliders': ['gripper_r_inner_link4', 'gripper_r_outer_link4'],
+        'base_frame': 'gripper_r_base_link',
+        'bite': 0.016,
+        'pinch_width_resolution': 8,
+    },
     'robot_g2_place_workpiece_gripper': {
         'gripper_file': 'bots/robot_g2_place_workpiece_gripper.usd',
         'finger_colliders': ['gripper_r_inner_link1', 'gripper_r_outer_link1'],
