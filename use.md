@@ -1,262 +1,336 @@
-# robotiq_2f_85:
+# GraspDataGen 使用命令
+
+这份文件只放常用运行命令和参数注意事项。完整流程是先用 `datagen.py`
+生成候选抓取，再用 `grasp_sim.py` 做仿真验证；只有仿真通过的 grasp 才算可用。
+
+## 参数规则
+
+- `datagen.py` 生成候选抓取可以使用 `--max_num_envs 512`，包括 cola。
+- 常规单独仿真可以先用 `--max_num_envs 256`。
+- `cola.obj` 只有在 `grasp_sim.py` 仿真时必须把 `--max_num_envs` 降到 `64`，否则容易爆内存。
+- `plate.obj` 对浅夹爪比较吃力，扰动力通常要降到 `0.2` 到 `0.6`。
+
+## 批处理
+
+`objects/datagen_example.json` 当前包含 `cola.obj`，批处理这里只做 datagen，默认使用
+`--max_num_envs 512`。
 
 ```bash
-python scripts/graspgen/datagen.py \
-    --gripper_config robotiq_2f_85 \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 512 \
-    --force_magnitude 1.0 \
-    --overwrite_existing
+uv run python scripts/graspgen/tools/batch_datagen_grippers.py \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 2048 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing \
+  --min_success_grasps 1
+```
 
-python scripts/graspgen/datagen.py \
-    --gripper_config robotiq_2f_85 \
-    --object_scales_json objects/plate.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 512 \
-    --force_magnitude 0.5 \
-    --overwrite_existing
+后续单独仿真 `cola.obj` 时仍使用 `--max_num_envs 64`。
 
-//夹爪太浅，盘子太大，扰动力应该设置小一些否则容易直接将盘子从夹子中扯出
+## 单夹爪模板
+
+### 生成候选抓取
+
+```bash
 uv run python scripts/graspgen/datagen.py \
-    --gripper_config robotiq_2f_85 \
-    --object_scales_json objects/plate.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 512 \
-    --force_magnitude 0.5 \
-    --overwrite_existing
+  --gripper_config <gripper_config> \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing
+```
+
+### 常规仿真验证
+
+```bash
+uv run scripts/graspgen/grasp_sim.py \
+  --grasp_file datagen_sim_data/<gripper_config>/<object>.yaml \
+  --object_file objects/<object>.obj \
+  --object_scale 1.0 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed
+```
+
+### Cola 仿真验证
+
+`objects/datagen_example.json` 里的 cola scale 是 `0.1`，对应输出通常是
+`cola.0.1.yaml`。如果使用 scale `1.0`，输出文件名通常是 `cola.yaml`。
+
+```bash
+uv run scripts/graspgen/grasp_sim.py \
+  --grasp_file datagen_sim_data/<gripper_config>/cola.0.1.yaml \
+  --object_file objects/cola.obj \
+  --object_scale 0.1 \
+  --max_num_envs 64 \
+  --max_num_grasps 2048 \
+  --force_headed
+```
+
+## Robotiq 2F 85
+
+```bash
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config robotiq_2f_85 \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing
+```
+
+Plate 专项：
+
+```bash
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config robotiq_2f_85 \
+  --object_scales_json objects/plate.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 0.5 \
+  --overwrite_existing
 
 uv run scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/robotiq_2f_85/plate.yaml \
-      --object_file objects/plate.obj \
-      --object_scale 1.0 \
-      --max_num_envs 256 \
-      --max_num_grasps 2048 \
-      --force_headed \
-      --force_magnitude 0.6
+  --grasp_file datagen_sim_data/robotiq_2f_85/plate.yaml \
+  --object_file objects/plate.obj \
+  --object_scale 1.0 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed \
+  --force_magnitude 0.6
 ```
 
-
-# onrobot_rg6
-
-```bash
-python scripts/graspgen/datagen.py \
-    --gripper_config onrobot_rg6 \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 512 \
-    --force_magnitude 1.0 \
-    --overwrite_existing
-
-python scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/onrobot_rg6/banana.0.75.yaml \
-      --object_file objects/banana.obj \
-      --object_scale 0.75 \
-      --max_num_envs 256 \
-      --max_num_grasps 2048 \
-      --force_headed
-
-python scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/onrobot_rg6/handwheel.yaml \
-      --object_file objects/handwheel.obj \
-      --object_scale 1.0 \
-      --max_num_envs 256 \
-      --max_num_grasps 2048 \
-      --force_headed
-```
-
-# franka_panda
+## OnRobot RG6
 
 ```bash
-python scripts/graspgen/datagen.py \
-    --gripper_config franka_panda \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 512 \
-    --force_magnitude 1.0 \
-    --overwrite_existing
-
-python scripts/graspgen/datagen.py \
-    --gripper_config franka_panda \
-    --object_scales_json objects/plate.json \
-    --object_root objects \
-    --num_grasps 2048 \
-    --max_num_envs 512 \
-    --force_magnitude 0.5 \
-    --overwrite_existing
-
-python scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/franka_panda/plate.yaml \
-      --object_file objects/plate.obj \
-      --object_scale 1.0 \
-      --max_num_envs 256 \
-      --max_num_grasps 2048 \
-      --force_headed \
-      --force_magnitude 0.2
-```
-
-# piper_v2_gripper
-
-```bash
-python scripts/graspgen/datagen.py \
-    --gripper_config piper_v2_gripper \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 512 \
-    --force_magnitude 1.0 \
-    --overwrite_existing
-
-python scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/piper_v2_gripper/banana.0.75.yaml \
-      --object_file objects/banana.obj \
-      --object_scale 1.0 \
-      --max_num_envs 256 \
-      --max_num_grasps 2048 \
-      --force_headed
-```
-
-# piper_h_v1_gripper
-```bash
-python scripts/graspgen/datagen.py \
-    --gripper_config piper_h_v1_gripper \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 512 \
-    --force_magnitude 1.0 \
-    --overwrite_existing
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config onrobot_rg6 \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing
 
 uv run scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/piper_h_v1_gripper/handwheel.yaml \
-      --object_file objects/handwheel.obj \
-      --object_scale 1.0 \
-      --max_num_envs 256 \
-      --max_num_grasps 2048 \
-      --force_headed
-```
-
-# piper_l_v1_gripper
-
-```bash
-python scripts/graspgen/datagen.py \
-    --gripper_config piper_l_v1_gripper \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 512 \
-    --force_magnitude 1.0 \
-    --overwrite_existing
+  --grasp_file datagen_sim_data/onrobot_rg6/banana.0.75.yaml \
+  --object_file objects/banana.obj \
+  --object_scale 0.75 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed
 
 uv run scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/piper_l_v1_gripper/mug.yaml \
-      --object_file objects/mug.obj \
-      --object_scale 1.0 \
-      --max_num_envs 256 \
-      --max_num_grasps 2048 \
-      --force_headed
+  --grasp_file datagen_sim_data/onrobot_rg6/handwheel.yaml \
+  --object_file objects/handwheel.obj \
+  --object_scale 1.0 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed
 ```
 
-# piper_x_v1_gripper
+## Franka Panda
+
 ```bash
-python scripts/graspgen/datagen.py \
-    --gripper_config piper_x_v1_gripper \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 512 \
-    --force_magnitude 1.0 \
-    --overwrite_existing
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config franka_panda \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing
+```
+
+Plate 专项：
+
+```bash
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config franka_panda \
+  --object_scales_json objects/plate.json \
+  --object_root objects \
+  --num_grasps 2048 \
+  --max_num_envs 512 \
+  --force_magnitude 0.5 \
+  --overwrite_existing
 
 uv run scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/piper_x_v1_gripper/plate.yaml \
-      --object_file objects/plate.obj \
-      --object_scale 1.0 \
-      --max_num_envs 256 \
-      --max_num_grasps 2048 \
-      --force_headed
+  --grasp_file datagen_sim_data/franka_panda/plate.yaml \
+  --object_file objects/plate.obj \
+  --object_scale 1.0 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed \
+  --force_magnitude 0.2
 ```
 
-# changingtek_ag2f90
+## Piper V2 Gripper
+
 ```bash
-python scripts/graspgen/datagen.py \
-    --gripper_config changingtek_ag2f90 \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 512 \
-    --force_magnitude 1.0 \
-    --overwrite_existing
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config piper_v2_gripper \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing
 
 uv run scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/changingtek_ag2f90/banana.0.75.yaml \
-      --object_file objects/banana.obj \
-      --object_scale 0.75 \
-      --max_num_envs 256 \
-      --max_num_grasps 2048 \
-      --force_headed
-
+  --grasp_file datagen_sim_data/piper_v2_gripper/banana.0.75.yaml \
+  --object_file objects/banana.obj \
+  --object_scale 0.75 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed
 ```
+
+## Piper H V1 Gripper
+
+```bash
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config piper_h_v1_gripper \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing
+
 uv run scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/omnipicker/plate.yaml \
-      --object_file objects/plate.obj \
-      --object_scale 1.0 \
-      --max_num_envs 64 \
-      --max_num_grasps 1024 \
-      --force_headed \
-      --force_magnitude 0.5 \
-      --gravity_force_scale 3.0 \
-      --headed_hold_seconds 1.0
+  --grasp_file datagen_sim_data/piper_h_v1_gripper/handwheel.yaml \
+  --object_file objects/handwheel.obj \
+  --object_scale 1.0 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed
 ```
 
-# robot_g2_omnipicker_gripper
+## Piper L V1 Gripper
+
 ```bash
-python scripts/graspgen/datagen.py \
-    --gripper_config robot_g2_omnipicker_gripper \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 512 \
-    --force_magnitude 0.2 \
-    --overwrite_existing
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config piper_l_v1_gripper \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing
+
+uv run scripts/graspgen/grasp_sim.py \
+  --grasp_file datagen_sim_data/piper_l_v1_gripper/mug.yaml \
+  --object_file objects/mug.obj \
+  --object_scale 1.0 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed
 ```
 
+## Piper X V1 Gripper
 
-Piper USD的碰撞 API 原来主要挂在 Xform 父节点，实际 Mesh 没有直接成为 collider，导致验证时 finger 接触经常为 0。
 ```bash
-scripts/graspgen/tools/extract_piper_gripper_usd.py:665：生成 Piper USD 时把 PhysicsCollisionAPI / PhysicsMeshCollisionAPI 直接写到 collision Mesh prim 上。
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config piper_x_v1_gripper \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing
 
-scripts/graspgen/tools/extract_piper_gripper_usd.py:692：给 Piper finger 绑定高摩擦 physics material。
-
-scripts/graspgen/tools/extract_piper_gripper_usd.py:995：提高 Piper 主动 prismatic joint drive 到 stiffness=4000 / damping=400 / maxForce=1000。已重新生成 bots/piper_v2_gripper.usd 和 bots/piper_v2_gripper.npz。
-
-scripts/graspgen/gripper_configurations.py:72：piper_v2_gripper 默认关闭 reject_interpenetration，因为这个三角网格相交检查会把物理接触后的微小穿透全部过滤掉。
-
-scripts/graspgen/grasp_sim.py:178：加了 --debug_validation_stats，方便以后看左右 finger 接触数、interpenetration 数 和最终 success 数。
-
-scripts/graspgen/grasp_sim.py:686：顺手修了 --max_num_grasps 小于候选数量时的 slice bug。
+uv run scripts/graspgen/grasp_sim.py \
+  --grasp_file datagen_sim_data/piper_x_v1_gripper/plate.yaml \
+  --object_file objects/plate.obj \
+  --object_scale 1.0 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed
 ```
 
-1. P1: 默认开启的穿透检查会让 fresh clone 下的 Franka/Piper 抓取验证失败或依赖本地脏文件。
-     default_reject_interpenetration=True 后，读取 grasp file 时会强制进入
-     load_interpenetration_meshes_from_grasp_file()，但这里构造 GripperConfig 只用了 CLI 的 base_frame/
-     bite/...，没有读取 grasp YAML 里保存的 gripper_frame_link，也没有传入新增的 approach_axis/open_axis/
-     bite_mid_axis_position。 fresh clone 里 bots/*.npz 没被 commit 追踪，创建 Franka/Piper gripper 时会落到默
-     认 base_frame="base_frame"，而 Franka 实际是 panda_hand，Piper 是 link6/Link6。相关位置：scripts/graspgen/
-     grasp_sim.py:422, scripts/graspgen/grasp_sim.py:430, scripts/graspgen/grasp_sim.py:708, scripts/graspgen/
-     grasp_sim.py:840。
-2. P1: interpenetration 路径用 skip_config_validation=True 会静默接受陈旧/不匹配的 .npz。
-    这个检查依赖 gripper mesh、finger_indices 和 bite_point 来把 finger0 mesh 从 bite frame 还原到 link
-    frame；这些数据都和 finger_colliders/bite/open_axis/approach_axis 强相关。但这里跳过了 saved config 校验，
-    导致本地已有旧 bots/<gripper>.npz 时不会重建，结果可能随本地未跟踪文件变化，产生错误的穿透拒绝/放行。
-    scripts/graspgen/grasp_sim.py:397, scripts/graspgen/grasp_sim.py:439, scripts/graspgen/grasp_sim.py:457,
-    scripts/graspgen/gripper.py:289。
-3. P2: --headed_hold_seconds 有限等待后，force_headed 模式不会关闭 SimulationApp。
-    新逻辑允许 headed 模式等固定秒数后跳出渲染循环，但 main() 仍然因为 args.force_headed 为真而跳过
-    simulation_app.close()。这会让“有限 hold”语义不完整，可能留下 Isaac app/窗口资源不关闭。scripts/graspgen/
-    grasp_sim.py:1465, scripts/graspgen/grasp_sim.py:1473, scripts/graspgen/grasp_sim.py:1526。
+## ChangingTek AG2F90
+
+```bash
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config changingtek_ag2f90 \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing
+
+uv run scripts/graspgen/grasp_sim.py \
+  --grasp_file datagen_sim_data/changingtek_ag2f90/banana.0.75.yaml \
+  --object_file objects/banana.obj \
+  --object_scale 0.75 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed
+```
+
+## OmniPicker
+
+```bash
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config omnipicker \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing
+```
+
+Plate 专项：
+
+```bash
+uv run scripts/graspgen/grasp_sim.py \
+  --grasp_file datagen_sim_data/omnipicker/plate.yaml \
+  --object_file objects/plate.obj \
+  --object_scale 1.0 \
+  --max_num_envs 64 \
+  --max_num_grasps 1024 \
+  --force_headed \
+  --force_magnitude 0.5 \
+  --gravity_force_scale 3.0 \
+  --headed_hold_seconds 1.0
+```
+
+Banana 验证：
+
+```bash
+uv run scripts/graspgen/grasp_sim.py \
+  --grasp_file datagen_sim_data/omnipicker/banana.0.75.yaml \
+  --object_file objects/banana.obj \
+  --object_scale 0.75 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed
+```
+
+## G2 Right OmniPicker Gripper
+
+```bash
+uv run python scripts/graspgen/datagen.py \
+  --gripper_config g2_right_omnipicker_gripper \
+  --object_scales_json objects/datagen_example.json \
+  --object_root objects \
+  --num_grasps 1024 \
+  --max_num_envs 512 \
+  --force_magnitude 1.0 \
+  --overwrite_existing
+
+uv run scripts/graspgen/grasp_sim.py \
+  --grasp_file datagen_sim_data/g2_right_omnipicker_gripper/banana.0.75.yaml \
+  --object_file objects/banana.obj \
+  --object_scale 0.75 \
+  --max_num_envs 256 \
+  --max_num_grasps 2048 \
+  --force_headed
+```
