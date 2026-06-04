@@ -1087,7 +1087,21 @@ class GraspingSimulation:
                     # position.  They will have to slowly move there, even though write_joint_state_to_sim is supposed
                     # to be a teleport command.
                     gripper.set_joint_position_target(joint_pos)
-                    gripper.write_joint_state_to_sim(joint_pos, joint_vel)
+                    # IMPORTANT (closed-loop grippers, e.g. the G2 right OmniPicker):
+                    # get_initial_joint_pos only sets the DRIVEN cspace joint (idx81) to its
+                    # open (pregrasp) value; every other linkage joint stays at its default
+                    # (closed) value. Teleporting that mix via write_joint_state_to_sim writes
+                    # a kinematically INCONSISTENT state — it violates the hard spherical
+                    # loop-closure joints (idx93/idx94) that close the 4-bar linkage — so the
+                    # articulation solver cannot recover and the gripper collapses to closed.
+                    # (Mimic-only grippers like omnipicker have no hard loop, so their soft
+                    # mimic followers absorb the teleport and it works.) We therefore teleport
+                    # to the *consistent* rest (default) state instead, and let the PD
+                    # controller drive the driven joint to the open target below while PhysX
+                    # solves the loop closure incrementally — exactly what happens when you
+                    # drag the driven joint in the Isaac Sim GUI.
+                    consistent_joint_pos = gripper.data.default_joint_pos.clone()
+                    gripper.write_joint_state_to_sim(consistent_joint_pos, joint_vel)
                     # Use joint_vel_limits if available, otherwise fall back to joint_velocity_limits
                     if hasattr(gripper.data, 'joint_vel_limits'):
                         temp_vel_limits = gripper.data.joint_vel_limits.clone()
@@ -1099,15 +1113,37 @@ class GraspingSimulation:
                     gripper.write_joint_velocity_limit_to_sim(wp.to_torch(vel_limits, requires_grad=False))
                     scene.reset()
 
-                    # clear internal buffers
-
-                    for i in range(2):
+                    # Drive the driven (cspace) joint(s) to their open (pregrasp) target.
+                    # Mimic-only grippers (e.g. omnipicker) couple the linkage with SOFT
+                    # per-step mimic constraints that absorb a teleport, so they tolerate
+                    # write_joint_state_to_sim jumping straight to the open pose. This gripper
+                    # instead closes its 4-bar linkage with HARD spherical loop joints
+                    # (idx93/idx94): the passive linkage angles can only be reached by solving
+                    # the loop closure INCREMENTALLY as the driven joint moves — exactly what
+                    # happens when you drag the driven joint in the Isaac Sim GUI. That is the
+                    # same full-range move as the close phase below, so it needs a comparable
+                    # time budget; the old fixed 60 steps was only ~0.24 s at fps=250 (vs the
+                    # ~1 s close), which left the gripper barely open. Step until the driven
+                    # joint reaches the target, capped so we never spin forever.
+                    # (render=False, so this open phase is invisible; the visible phase is the
+                    # subsequent close starting at count==1.)
+                    _open_idx = [gripper.data.joint_names.index(n) for n in self.cspace_joint_names]
+                    _open_target = joint_pos[:, _open_idx].clone()
+                    _open_tol = 0.02  # rad (~1.1 deg) — controls early exit only; the cap guarantees enough settling
+                    _open_cap = max(60, int(round(1.5 * self.config.initial_grasp_duration / sim_dt)))
+                    _open_err = None
+                    for i in range(_open_cap):
                         scene.write_data_to_sim()
                         # Perform step
                         sim.step(render=False)
                         # Update buffers
                         scene.update(sim_dt)
-                        #print(".", end="", flush=True)
+                        _open_err = (gripper.data.joint_pos[:, _open_idx] - _open_target).abs().max().item()
+                        if _open_err < _open_tol:
+                            break
+                    if _open_err is not None and _open_err >= _open_tol:
+                        print_yellow(f"\n  ⚠ open settle did not reach target after {_open_cap} steps "
+                                     f"(max driven-joint error {_open_err:.4f} rad); grasp may start under-opened.")
 
                     gripper.write_joint_velocity_limit_to_sim(temp_vel_limits)
                     gripper.write_joint_velocity_to_sim(joint_vel)
