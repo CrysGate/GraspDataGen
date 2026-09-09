@@ -43,6 +43,19 @@ The viewer reads poses and named joint states from YAML, with asset references
 from the adjacent `manifest.json`. It does not simulate approach or holding.
 Select a zero-based candidate in the window or pass `--candidate 0` at startup.
 
+For browser inspection with NiceGUI, including all grasp poses at once:
+
+```bash
+uv run --project environments/web --locked python environments/web/serve.py
+```
+
+Open http://127.0.0.1:8080. The page offers single/all pose modes, recorded gripper
+closure, transparency, pose navigation, camera controls and image export. It loads
+prepared datasets or standalone YAML beside configured source objects without
+starting Isaac Sim. Its isolated environment keeps USD dependencies separate from
+the simulation runtime. See [the web viewer guide](docs/web-viewer.md) for data selection
+and remote access.
+
 ```bash
 uv run --locked graspdatagen replay --run outputs/production/piper--bottle \
   --environments 1 --output outputs/replay/piper--bottle.json

@@ -28,7 +28,7 @@ graspdatagen = "graspdatagen.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-graspdatagen = ["physx.kit"]
+graspdatagen = ["physx.kit", "web_static/*.js", "web_static/*.css"]
 
 [dependency-groups]
 dev = ["ruff==0.15.6", "mypy==1.19.1", "types-PyYAML==6.0.12.20250915"]
