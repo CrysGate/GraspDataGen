@@ -1,0 +1,21 @@
+# Portable subset imported from learn-isaac/configs/robots/x5.yml on 2026-09-08.
+name: arx-x5
+usd_path: Assets/Robots/x5/ARX.usd
+urdf_path: Assets/Robots/x5/X5A.urdf
+kinematics:
+  ee_body: link6
+  tcp:
+    parent_frame: link6
+    position_m: [0.118, 0.0, 0.0]
+    orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+actuators:
+  gripper:
+    joint_names: [joint7, joint8]
+    stiffness: null
+    damping: null
+    effort_limit_sim: null
+    velocity_limit_sim: null
+gripper:
+  joint_names: [joint7, joint8]
+  command_joint_names: [joint7]
+  finger_body_names: [link7, link8]

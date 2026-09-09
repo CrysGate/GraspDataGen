@@ -1,72 +1,14 @@
-# Repository Guidelines
+# 编码原则
+- 一个方法或者函数支持传递可选参数，支持一个参数有多种不同的类型或者支持传入的参数为None,以上每一种情况都必须要有对应真实的使用需求/项目逻辑才能进行这种支持，并且进行支持之后必须要说明清楚：
+    - 可选参数：到底是在什么样的真实情况下需要传递这些可选参数，什么情况下不需要
+    - 支持传入的参数是不同的类型：每一种类型对应的项目真实的运行的逻辑是什么
+    - 支持传入的参数是None：为什么需要支持，在什么样的情况会有需要传入参数为None的真实需求，否则应该使用传递固定类型的参数
+- 同样的，定义变量的时候给变量的类型，如果支持变量是某个类型或者是None,也要给出明确的真实运行逻辑和项目需求
+- 总是应该优先思考能让代码更加精简，逻辑更加清晰，可读性更强，甚至能让代码行数减少的同时实现更好的效果的修改方式
+- 尽可能的避免硬编码
 
-## Project Structure & Module Organization
+# 测试
+不编写单元测试代码，而是执行真实的运行链路来进行相关改动的测试
 
-GraspDataGen is a Python workflow built around IsaacLab/PhysX. Core scripts live in `scripts/graspgen/`; the highest-priority entry points are `datagen.py` and `grasp_sim.py`. Related generation, definition, configuration, and utility logic lives beside them, including `create_gripper_lab.py`, `grasp_guess.py`, `gripper_configurations.py`, `graspgen_utils.py`, `grasp_constants.py`, `mesh_utils.py`, and `warp_*` modules. Tools are under `scripts/graspgen/tools/`. Gripper USD assets are in `bots/`, object meshes and sample JSON inputs are in `objects/`, and documentation is in `docs/`.
-
-## Workflow Priorities
-
-The batch path is: generate candidate grasps with `datagen.py`, then validate them with `grasp_sim.py`. In practice, treat grasp guess output as provisional until simulation has accepted it. When changing gripper behavior, first regenerate the gripper definition with `create_gripper_lab.py`, then inspect the saved `.npz` and the emitted grasp YAML before changing downstream code.
-
-## Multi-Gripper Adaptation Goals
-
-The core project goal is to support multiple two-finger grippers that can generate correct grasp data accepted by real simulation validation. A gripper is not adapted just because `grasp_guess.py` emits a YAML file; it must have a usable gripper USD, a verified generated definition, plausible pregrasp/grasp c-space data, and successful `grasp_sim.py` results.
-
-Gripper sources may come from:
-
-- `bots/`: preferred location for pure gripper USD assets used by this pipeline.
-- `robot_usds/grippers/`: candidate pure or near-pure gripper assets that may need cleanup before registration.
-- `robot/`: full robots or arms that may contain a two-finger end effector.
-
-If a source USD is a full robot, arm, or scene, do not use it directly as `--gripper_file` for data generation. First extract or generate a USD that contains only the gripper, put that result under `bots/`, register it in `GRIPPER_CONFIGS`, then validate it through the normal definition, guess, and simulation path. It is acceptable to edit or regenerate USD files when the USD itself is the root cause, including mass, friction, collision bodies, joint setup, drives, or frame placement.
-
-## Gripper Validation Checklist
-
-When adapting or debugging a specific gripper, inspect the USD itself before trusting wrapper configuration. Read the prim hierarchy and per-prim physics settings directly, including rigid bodies, joints, drives, mass, friction/material bindings, collision APIs, collider approximations, finger collider paths, base frame placement, open-limit semantics, and joint limits.
-
-After changing a gripper USD or configuration:
-
-- Regenerate the gripper definition with `create_gripper_lab.py`.
-- Inspect the saved `.npz` and emitted grasp YAML metadata.
-- Verify the generated open state is the widest valid pregrasp opening.
-- Verify the generated grasp state moves toward the closed limit.
-- Run `grasp_guess.py` for a small sample and confirm it produces plausible candidate data.
-- Run `grasp_sim.py --max_num_grasps 16` or another focused simulation check and confirm actual validated successes.
-- Treat a final successful grasp as one that passes all required validation stages: normal grasp and hold, multiple random-direction disturbance tests, then inversion of the already-grasping gripper/object pair followed by object gravity to confirm stable holding.
-
-If no successful grasp data can be produced after reasonable tuning, do not keep changing parameters blindly. Determine which branch is failing:
-
-- The gripper construction is physically unsuitable or impossible for the object set.
-- The gripper USD is wrong, such as bad mass, friction, collision, joint, drive, or frame settings.
-- The gripper definition extraction is wrong, such as incorrect finger colliders, base frame, open axis, approach axis, open limit, or bite point.
-- The grasp guess pipeline is producing invalid pregrasp/grasp c-space, bad approach poses, bad centering, or incorrect close direction.
-- The simulation validation is wrong or too strict, such as incorrect contact detection, force application, gravity handling, object mass, or success criteria.
-
-## Agent-Specific Instructions
-
-Approach fixes cautiously. Gather enough local context, rely on verifiable information, reproduce or validate the issue when practical, and identify the root cause before editing code. Do not patch from guesses. After the root cause is clear, make the smallest effective fix; avoid broad rewrites, large helper layers, or speculative code. When a bug touches a specific gripper, inspect the USD internals and the generated gripper definition first; do not rely only on wrapper configs or previous assumptions. Read the USD prim hierarchy and per-prim settings directly, including rigid bodies, joints, drives, mass, friction/material bindings, collision APIs, collider approximations, finger collider paths, base frame placement, open-limit semantics, and joint limits. Do not assume one gripper's parameters transfer to another. In grasp generation, verify that the pregrasp/open state is the widest valid opening and that the grasp state moves toward the closed limit. When changing behavior, first trace the impact through `scripts/graspgen/datagen.py`, `scripts/graspgen/grasp_sim.py`, and files they import. Preserve their CLI compatibility and output conventions unless the request explicitly changes them.
-
-## Generate and Validate
-
-- `uv run python scripts/graspgen/datagen.py \
-    --gripper_config robotiq_2f_85 \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 256`: runs the batch pipeline locally.
-
-- `uv run scripts/graspgen/grasp_sim.py \
-      --grasp_file datagen_sim_data/robotiq_2f_85/banana.0.75.yaml \
-      --object_file objects/banana.obj \
-      --object_scale 0.75 \
-      --max_num_envs 256 \
-      --max_num_grasps 1024 \
-      --force_headed`: validation.
-
-## Commit
-
-The current history uses short, imperative summaries such as `fix gripper usd generation` and `add piper usd`. Keep commits focused and mention the affected component when useful. Include a clear description, reproduction or validation commands, and any generated asset/data changes.
-
-## Configuration Tips
-
-Do not commit generated datasets, local virtual environments, or private object assets.
+# 运行
+所有涉及到需要用gpu的命令都要在沙箱外执行

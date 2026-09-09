@@ -1,0 +1,21 @@
+# Portable subset imported from learn-isaac/configs/robots/piper.yml on 2026-09-08.
+name: piper
+usd_path: Assets/Robots/piper/Piper.usd
+urdf_path: Assets/Robots/piper/piper_description/urdf/piper.urdf
+kinematics:
+  ee_body: link6
+  tcp:
+    parent_frame: gripper_center
+    position_m: [-0.04, 0.0, 0.0]
+    orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+actuators:
+  gripper:
+    joint_names: [gripper_joint, joint8]
+    stiffness: null
+    damping: null
+    effort_limit_sim: null
+    velocity_limit_sim: null
+gripper:
+  joint_names: [gripper_joint, joint8]
+  command_joint_names: [gripper_joint]
+  finger_body_names: [link7, link8]

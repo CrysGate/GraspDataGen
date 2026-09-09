@@ -1,0 +1,35 @@
+name: arx_x5
+robot_config: configs/robots/arx_x5.yaml
+root_prim: /X5A
+base_body: link6
+retained_bodies: [link6, link7, link8, camera_base, camera]
+retained_joints: [joints/joint7, joints/joint8, joints/hand_to_camera_mount, joints/camera_joint]
+tcp_parent_prim: link6
+finger_colliders:
+  - link7/collisions/link7/node_STL_BINARY_/mesh
+  - link8/collisions/link8/node_STL_BINARY_/mesh
+approach_axis_base: [1.0, 0.0, 0.0]
+opening_axis_base: [0.0, 1.0, 0.0]
+contact_region:
+  approach_interval_m: [0.100, 0.135]
+  lateral_interval_m: [-0.008, 0.008]
+  normal_alignment_min: 0.90
+material:
+  static_friction: 0.8
+  dynamic_friction: 0.8
+  restitution: 0.0
+  source: Explicit configured ARX friction model (0.8), not measured hardware; source USD has no PhysicsMaterial.
+  sensitivity_friction: [0.3, 0.5, 0.7, 0.8]
+calibration:
+  samples: 9
+  steps_per_second: 240
+  settle_steps: 720
+  position_tolerance_m: 0.0005
+  velocity_tolerance_m_s: 0.001
+  contact_probe_width_m: 0.04
+  contact_probe_depth_m: 0.016
+  contact_probe_height_m: 0.010
+  contact_probe_mass_kg: 0.05
+  hold_steps: 240
+  minimum_contact_force_N: 0.05
+  max_probe_translation_m: 0.003

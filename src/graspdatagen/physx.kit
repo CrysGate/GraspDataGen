@@ -1,0 +1,21 @@
+[package]
+title = "GraspDataGen PhysX"
+version = "0.1.0"
+
+[dependencies]
+"omni.usd" = {}
+"omni.kit.loop-isaac" = {}
+"isaacsim.core.simulation_manager" = {}
+"isaacsim.core.cloner" = {}
+"omni.physx.fabric" = {}
+
+[settings]
+app.name = "GraspDataGen PhysX"
+app.version = "0.1.0"
+app.settings.persistent = false
+app.settings.fabricDefaultStageFrameHistoryCount = 3
+app.player.useFixedTimeStepping = false
+app.runLoops.main.rateLimitEnabled = false
+app.useFabricSceneDelegate = true
+exts."isaacsim.core.simulation_manager".default_engine = "physx"
+persistent.app.usd.muteUsdDiagnostics = false

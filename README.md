@@ -1,169 +1,107 @@
-
 # GraspDataGen
 
-GraspDataGen is a standalone data generation tool but it can also be used to generate data for training new [Grasp Gen](https://github.com/NVlabs/GraspGen) models. It is designed to create collision-free, geometrically plausible grasps for triangle mesh objects and USD grippers, then validate them through physics simulation.
+Generate parallel-jaw grasp data directly from rigid USD/USDZ assets with Isaac
+Sim 6.0.1, native GPU PhysX and Warp. The public command is `uv run graspdatagen`.
+Python 3.12 and all runtime versions are locked in the root project.
 
-## Overview
+## Run
 
-The system consists of three main components:
-
-1. **[Gripper Definition](docs/components/gripper-definition.md)** - Reads USD gripper files and extracts parameters needed for grasp generation
-2. **[Grasp Guess Generation](docs/components/grasp-guess.md)** - Creates geometrically plausible grasps for objects
-3. **[Grasp Simulation](docs/components/grasp-sim.md)** - Validates grasps through physics simulation using PhysX
-
-Each component can be used independently or as part of a complete workflow.
-
-## Installation
-
-For detailed installation instructions, see the **[Installation Guide](docs/installation.md)**. The guide covers:
-
-- **Docker installation** (recommended) - Includes all dependencies and IsaacLab
-- **Integration with existing IsaacLab** - Use with your current IsaacLab setup
-
-## Using Datagen
-
-The easiest way to get started using the full GraspDataGen pipeline is by using predefined gripper configurations (**see**: `scripts/graspgen/gripper_configurations.py`) and the `datagen.py` script:
+On Linux x86_64 with a supported NVIDIA GPU and driver, install
+[uv](https://docs.astral.sh/uv/getting-started/installation/) and make the external
+asset tree available at `Assets/`. See [installation](docs/installation.md) for
+the required paths and dependency details. Run from the repository root:
 
 ```bash
-python scripts/graspgen/datagen.py \
-    --gripper_config onrobot_rg6 \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects \
-    --num_grasps 1024 \
-    --max_num_envs 256
+uv sync --locked
+export OMNI_KIT_ACCEPT_EULA=YES
+export OPENBLAS_NUM_THREADS=1
+export OMP_NUM_THREADS=8
+uv run --locked graspdatagen generate --config configs/runs/production.yaml
 ```
 
-The `datagen.py` script is an example of using the 3 components together to generate and verify grasps for multiple objects defined in a JSON file.
+The production profile requests 1,024 distinct successes for each of Piper /
+ARX-X5 and the bottle / 25 matryoshka instances, for 52 combinations.
+It writes `outputs/production/report.json`, per-pair manifests, numeric NPZ shards,
+diagnostics and worker logs. Inspect each combination's status and success count;
+`complete: true` also permits an explicitly reported insufficient or invalid
+combination. `all_targets_reached` checks the requested quantity.
 
-**Note**: The `datagen.py` script handles objects differently: it loads multiple objects from a JSON file instead of a single object file. In contrast, individual components such as `grasp_guess.py` and `grasp_sim.py` use the **`--object_file`** argument for single objects.
+Each generated pair gets `grasps.yaml` as soon as that combination finishes and
+passes log verification: candidate ID, robot, actual grasp pose, approach axis in
+object coordinates and measured closed joint positions.
+Existing datasets can be exported
+with `uv run --locked graspdatagen export --run outputs/production/piper--bottle`
+without GPU simulation.
 
-### Available Gripper Configurations
-
-The system includes predefined configurations for common grippers:
-
-- **`robotiq_2f_85`** - Robotiq 2F-85 parallel gripper
-- **`onrobot_rg6`** - OnRobot RG6 gripper  
-- **`franka_panda`** - Franka Panda gripper
-
-Use **`--gripper_config <name>`** to configure all gripper parameters based on the user definitions in `scripts/graspgen/gripper_configurations.py`.
-
-You can override any configuration parameter by providing it explicitly on the command line:
+Inspect those static grasps in Isaac Sim from a graphical desktop:
 
 ```bash
-# Use onrobot_rg6 configuration but with custom parameters
-python scripts/graspgen/datagen.py \
-    --gripper_config onrobot_rg6 \
-    --gripper_file bots/custom_gripper.usd \
-    --bite 0.02 \
-    --object_scales_json objects/datagen_example.json \
-    --object_root objects
+uv run --locked graspdatagen view --grasps outputs/production/piper--bottle/grasps.yaml
 ```
 
-This will use the onrobot_rg6 configuration as a base but override the gripper file and bite depth with your custom values.
-
-**Note**: Read more about the **[parameter override system](docs/api/parameter-system.md#parameter-override-systems)** that applies to all components of GraspDataGen.
-
-Alternatively, you can add any new gripper configuration needed by adding to `GRIPPER_CONFIGS` in `scripts/graspgen/gripper_configurations.py`:
-
-```python
-    'Robotiq_2F_85_msJul21': {
-        'gripper_file': 'bots/Robotiq_2F_85_msJul21.usd',
-        'finger_colliders': ['right_inner_finger', 'left_inner_finger'],
-        'base_frame': 'base_link',
-        'bite': 0.0185,  # half of 37mm
-        'convergence_iterations': 172,
-    },
-```
-
-This custom config was used when experimenting with a gripper that had a stiff physics setup and needed more **`--convergence_iterations`** to get a proper gripper definition.
-
-#### Datagen Documentation
-- **[Complete Data Generation Pipeline](docs/workflows/datagen.md)** - Generate and verify grasps for a list of objects and scales
-
-## Using each component individually
-
-This section describes the three main components of the GraspDataGen code base in the simplest standalone mode, and supplies documentation for a more detailed explanation and example.
-
-### Gripper definition
-
-The gripper definition module is used to read the USD of a gripper and prepare it for grasp generation and validation. The minimum you need to create a gripper definition is a USD file, and the names of the finger and base prims, and you can create the definition with the `create_gripper_lab.py` script.
+The viewer reads poses and named joint states from YAML, with asset references
+from the adjacent `manifest.json`. It does not simulate approach or holding.
+Select a zero-based candidate in the window or pass `--candidate 0` at startup.
 
 ```bash
-python scripts/graspgen/create_gripper_lab.py \
-  --gripper_file bots/onrobot_rg6.usd \
-  --finger_colliders right_inner_finger left_inner_finger \
-  --base_frame base_frame
+uv run --locked graspdatagen replay --run outputs/production/piper--bottle \
+  --environments 1 --output outputs/replay/piper--bottle.json
+uv run --locked graspdatagen generate --config configs/runs/production.yaml --resume
 ```
 
-#### Documentation
-- **[Overview and parameters](docs/components/gripper-definition.md)** - Details on what the component does and its parameters
-- **[Gripper Setup Example](docs/examples/gripper-setup.md)** - Describes in detail how the Robotiq 85 was prepared for use in GraspDataGen
-- **[Running the Gripper Definition Component](docs/examples/gripper-definition.md)** - Visually verify your gripper will work with the simulation
+Replay executes saved pregrasp commands and every physical trial in a new worker.
+Resume requires the original configuration, implementation and inputs. For a new
+task, set a new `output` in the YAML. All commands that use GPU, including inspect
+and prepare, must run outside the agent sandbox.
 
-### Generate grasp guesses
+## Project Layout
 
-You can generate geometrically plausible, collision-free grasps with the `grasp_guess.py` script.
+- `Assets/`: external source assets; never generated or modified by this project.
+- `configs/`: robot/gripper definitions, the production object list and run settings.
+- `outputs/prepared/`: generated collision geometry, physical USD assets and gripper calibration.
+- `outputs/production/`: generated datasets and reports.
+- `src/graspdatagen/`: application code.
 
-```bash
-python scripts/graspgen/grasp_guess.py \
-    --gripper_config onrobot_rg6 \
-    --object_file objects/banana.obj
-```
+The YAML `cache` field selects the prepared-asset directory. `generate` creates
+missing assets automatically and reuses matching prepared assets across runs.
+Object collisions retain the source asset's collision meshes and PhysX settings.
+Native cooked hulls are stored for sampling; there is no project decomposition
+or surface-error budget.
+These assets are also required for replay, so retain them with any datasets you
+keep. They can be deleted when discarding the dependent datasets; the next
+generation will rebuild them. No root `cache/` or `bots/` directory is needed.
 
-#### Documentation
-- **[Overview and parameters](docs/components/grasp-guess.md)** - Details on what the component does and its parameters
-- **[Single Object Example](docs/examples/grasp-guess.md)** - Create collision free grasps for a single object
+## Data and Scope
 
+`pose_object_tcp_xyz_xyzw` is the configured TCP in the original object-root frame,
+stored as `[x, y, z, qx, qy, qz, qw]` in metres with a unit quaternion. It is the
+actual stable closure pose before disturbance. Each accepted grasp passes approach,
+closure, gravity hold, random disturbances, continuous inversion and inverted hold
+in one complete trial with the production profile. See the [data contract](docs/contracts.md).
 
-### Validate grasps through simulation
+Supported initial grippers are Piper and ARX-X5. Their TCP definitions come from
+the portable robot configuration snapshots. ARX friction 0.8 is an explicit
+simulation assumption. Full-arm IK, scene avoidance and hardware certification
+are outside this dataset's scope.
 
-If the grasps you want to validate have been generated by the grasp_guess module, then the only parameter you need to set when running grasp_sim is **`--grasp_file`**. The object and gripper settings will be gathered from the grasp file.
-
-```bash
-python scripts/graspgen/grasp_sim.py \
-    --grasp_file grasp_guess_data/onrobot_rg6/banana.yaml
-```
-
-#### Documentation
-- **[Overview and parameters](docs/components/grasp-sim.md)** - Details on what the component does and its parameters
-- **[Verify Grasps with Simulation](docs/examples/grasp-sim.md)** - Verify user defined grasps with simulation
+The trial-reset defect behind the historical batch-replay failure has been fixed;
+the 64-row validation dataset passed fresh-process batch replay. See the
+[consistency diagnosis](docs/consistency.md) for the controlled comparison.
+Full production acceptance is still open. The [remaining work](docs/refactor-plan.md)
+records the outstanding validation and production requirements. Historical local
+datasets and diagnostic outputs have since been cleaned up.
+`configs/runs/production.yaml` enumerates
+the bottle and all 25 matryoshka instances; it is a bounded production profile,
+not a guarantee of 1,024 successes for every pair.
 
 ## Documentation
 
-📚 **Comprehensive documentation is available in the [docs/](docs/) directory:**
+- [Installation and CLI](docs/installation.md)
+- [Physical and coordinate contracts](docs/contracts.md)
+- [Gripper adaptation](docs/grippers.md)
+- [Current Status and Remaining Work](docs/refactor-plan.md)
 
-- **[Documentation Overview](docs/README.md)** - Complete guide to the system
-- **[Installation Guide](docs/installation.md)** - Docker installation and IsaacLab integration
-- **[Component Documentation](docs/components/)** - Detailed guides for each component
-  - [Gripper Definition](docs/components/gripper-definition.md)
-  - [Grasp Guess Generation](docs/components/grasp-guess.md)
-  - [Grasp Simulation](docs/components/grasp-sim.md)
-- **[Workflow Documentation](docs/workflows/)** - Complete workflow guides
-  - [Batch Data Generation](docs/workflows/datagen.md)
-  - [Using with Grasp Gen](docs/workflows/graspgen.md)
-- **[Tools Documentation](docs/tools/)** - Utility tools for analysis, debugging, and data processing
-  - [Tools Overview](docs/tools/README.md)
-  - [Compare Tools](docs/tools/compare-tools.md) - Compare grasp simulations and gripper configurations
-  - [Debug Tools](docs/tools/utility-tools.md#debug-visualization) - Debugging and troubleshooting tools
-  - [Utility Tools](docs/tools/utility-tools.md) - Data processing and workflow management
-- **[Examples](docs/examples/)** - Examples to model your own workflow after.
-  - [Gripper Setup](docs/examples/gripper-setup.md) - Create a gripper definition and check it visually
-  - [Running the Gripper Definition Component](docs/examples/gripper-definition.md) - Visually verify your gripper will work with the simulation
-  - [Single Object Grasp Guess Generation](docs/examples/grasp-guess.md) - Create collision-free grasps for a single object
-  - [Verify Grasps with Simulation](docs/examples/grasp-sim.md) - Verify user-defined grasps with simulation
-- **[API Reference](docs/api/)** - Configuration and technical details
-  - [Args and Parameters](docs/api/parameter-system.md)
-
-## Citation
-
-If you found this work to be useful, please considering citing:
-
-```
-@article{murali2025graspgen,
-  title={GraspGen: A Diffusion-based Framework for 6-DOF Grasping with On-Generator Training},
-  author={Murali, Adithyavairavan and Sundaralingam, Balakumar and Chao, Yu-Wei and Yamada, Jun and Yuan, Wentao and Carlson, Mark and Ramos, Fabio and Birchfield, Stan and Fox, Dieter and Eppner, Clemens},
-  journal={arXiv preprint arXiv:2507.13097},
-  url={https://arxiv.org/abs/2507.13097},
-  year={2025},
-}
-```
+The former `scripts/graspgen` commands, OBJ/STL workflow, IsaacLab environment,
+Docker setup and sample assets have been replaced. Old source remains in Git
+history. Existing v1 P2 datasets can be replayed; new writes use only v2.
+Source assets, caches and generated datasets are not bundled with the project.

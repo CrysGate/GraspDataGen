@@ -1,4 +1,8 @@
 _isaac_sim/
+# Machine-local source assets and migration reference material are not distributed.
+/Assets
+/outputs/
+/bots/
 debug_output/
 grasp_guess_data/
 grasp_sim_data/

@@ -1,0 +1,36 @@
+name: piper
+robot_config: configs/robots/piper.yaml
+root_prim: /Piper
+base_body: link6
+retained_bodies: [link6, link7, link8]
+retained_joints: [joints/gripper_joint, joints/joint8]
+tcp_parent_prim: link6/gripper_center
+finger_colliders:
+  - link7/collisions/gripper/mesh
+  - link8/collisions/gripper/mesh
+# Directions are expressed in link6 and transformed to the authoritative TCP.
+approach_axis_base: [0.0, 0.0, 1.0]
+opening_axis_base: [0.0, 1.0, 0.0]
+contact_region:
+  approach_interval_m: [0.075, 0.130]
+  lateral_interval_m: [-0.007, 0.007]
+  normal_alignment_min: 0.90
+material:
+  static_friction: 1.0
+  dynamic_friction: 1.0
+  restitution: 0.0
+  source: Piper USD fingertip PhysicsMaterial; other retained colliders use this explicit model.
+  sensitivity_friction: [0.7, 1.0]
+calibration:
+  samples: 9
+  steps_per_second: 240
+  settle_steps: 720
+  position_tolerance_m: 0.0005
+  velocity_tolerance_m_s: 0.001
+  contact_probe_width_m: 0.04
+  contact_probe_depth_m: 0.016
+  contact_probe_height_m: 0.010
+  contact_probe_mass_kg: 0.05
+  hold_steps: 240
+  minimum_contact_force_N: 0.05
+  max_probe_translation_m: 0.003

@@ -1,0 +1,67 @@
+grippers: [configs/grippers/piper.yaml, configs/grippers/arx_x5.yaml]
+manifest: configs/objects/production.yaml
+cache: outputs/prepared
+output: outputs/production
+device: 0
+environments: 512
+seed: 20260908
+target_successes: 1024
+candidate_budget: 10240
+time_budget_s: 1800
+object_position_m: [0.25, 0.25, 0.25]
+sampling:
+  surface_samples: 4096
+  surface_rounds: 16
+  rolls_per_contact: 8
+  normal_alignment_min: 0.90
+  clearance_m: 0.003
+  pregrasp_distance_m: 0.08
+  collision_samples: 256
+  path_samples: 17
+  dedup_translation_m: 0.003
+  dedup_rotation_rad: 0.15
+  dedup_opening_m: 0.003
+posture:
+  object_up_axis: [0.0, 0.0, 1.0]
+  wrist_up_axes_base:
+    piper: [-1.0, 0.0, 0.0]
+    arx_x5: [0.0, 0.0, 1.0]
+  max_approach_up_dot: 0.0
+  min_wrist_up_dot: 0.0
+  bottom_clearance_m: 0.003
+validation:
+  version: graspdatagen.free_space.v2
+  solver_type: TGS
+  external_forces_every_iteration: false
+  solve_articulation_contact_last: true
+  steps_per_second: 120
+  trials: 1
+  random_directions: 8
+  solver_position_iterations: 64
+  solver_velocity_iterations: 4
+  contact_buffer_per_env: 2048
+  gpu_found_lost_pairs_capacity: 4194304
+  gpu_found_lost_aggregate_pairs_capacity: 4194304
+  gpu_total_aggregate_pairs_capacity: 4194304
+  gpu_max_rigid_contact_count: 4194304
+  approach_s: 1.5
+  close_s: 3.0
+  hold_s: 1.0
+  disturbance_s: 0.15
+  recovery_s: 0.5
+  invert_s: 4.0
+  inverted_hold_s: 1.0
+  stable_window_s: 0.20
+  contact_loss_s: 0.05
+  contact_offset_m: 0.001
+  minimum_contact_force_N: 0.05
+  max_translation_m: 0.003
+  max_rotation_rad: 0.10
+  max_linear_speed_m_s: 0.01
+  max_angular_speed_rad_s: 0.10
+  max_joint_speed_m_s: 0.002
+  joint_tolerance_m: 0.0005
+  approach_translation_m: 0.002
+  approach_rotation_rad: 0.03
+  command_speed_m_s: 0.02
+  disturbance_acceleration_m_s2: 5.0

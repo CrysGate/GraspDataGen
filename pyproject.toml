@@ -1,24 +1,54 @@
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "graspdatagen"
-version = "0.1.0"
-description = "Grasp data generation experiments based on Isaac Sim and Isaac Lab."
+version = "0.2.0"
+description = "USD grasp data production with native Isaac Sim PhysX validation."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE-2.0.txt", "THIRD_PARTY_NOTICES.txt"]
 dependencies = [
-    "isaacsim[all,extscache]==5.1.0.0",
-    "isaaclab[all]==2.3.2.post1",
-    "torch==2.7.0",
-    "torchvision==0.22.0",
-    "torchaudio==2.7.0",
-    "numpy<2",
-    "matplotlib",
-    "meshcat",
-    "usd-core==26.5",
-    "debugpy",
-    "rich>=15.0.0",
-    "warp-lang==1.12.1",
-    "trimesh",
+    "isaacsim[all,extscache]==6.0.1.0",
+    "numpy==2.3.1",
+    "pyyaml==6.0.3",
+    "torch==2.10.0",
+    "warp-lang==1.13.0",
+    "trimesh==4.11.1",
+    "scipy==1.17.0",
+    "matplotlib==3.10.8",
 ]
+
+[project.scripts]
+graspdatagen = "graspdatagen.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+graspdatagen = ["physx.kit"]
+
+[dependency-groups]
+dev = ["ruff==0.15.6", "mypy==1.19.1", "types-PyYAML==6.0.12.20250915"]
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# P0-qualified CUDA 12.8 family; audio/vision are Isaac Sim transitive dependencies.
+override-dependencies = [
+    "torch==2.10.0",
+    "torchaudio==2.10.0",
+    "torchvision==0.25.0",
+    "numpy==2.3.1",
+]
+
+[tool.uv.sources]
+isaacsim = { index = "nvidia" }
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
@@ -29,7 +59,18 @@ explicit = true
 name = "nvidia"
 url = "https://pypi.nvidia.com"
 
-[tool.uv.sources]
-torch       = [{ index = "pytorch-cu128" }]
-torchvision = [{ index = "pytorch-cu128" }]
-torchaudio  = [{ index = "pytorch-cu128" }]
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/graspdatagen"]
+ignore_missing_imports = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+warn_unused_ignores = true
+no_implicit_optional = true
