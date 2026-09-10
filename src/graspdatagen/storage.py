@@ -188,6 +188,8 @@ def export_grasps_yaml(directory: Path) -> Path:
         "object": manifest["object"]["name"],
         "position_unit": "m",
         "pose_layout": manifest["coordinates"]["pose_layout"],
+        "tcp": manifest["coordinates"]["tcp"]["configuration"],
+        "approach_distance_m": manifest["config"]["sampling"]["pregrasp_distance_m"],
         "candidates": [
             {
                 "candidate_id": index,

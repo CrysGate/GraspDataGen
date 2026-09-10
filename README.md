@@ -92,6 +92,11 @@ actual stable closure pose before disturbance. Each accepted grasp passes approa
 closure, gravity hold, random disturbances, continuous inversion and inverted hold
 in one complete trial with the production profile. See the [data contract](docs/contracts.md).
 
+Compact YAML exports include top-level `tcp` (parent frame, position in metres,
+and xyzw orientation) and `approach_distance_m` (the configured pregrasp offset).
+These are copied from the generation manifest for consumers to check TCP
+compatibility and construct an approach pose.
+
 Supported initial grippers are Piper and ARX-X5. Their TCP definitions come from
 the portable robot configuration snapshots. ARX friction 0.8 is an explicit
 simulation assumption. Full-arm IK, scene avoidance and hardware certification

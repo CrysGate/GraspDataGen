@@ -71,7 +71,13 @@ model, not a measurement. Historical P2 used ARX friction 0.5.
 As soon as a generated pair finishes and its log has passed verification up to that
 checkpoint, it gets `grasps.yaml`; later combinations do not delay its export.
 This compact view numbers successful candidates from 0 in each YAML file, in
-committed NPZ row order. These local indices are not the NPZ candidate IDs used
+committed NPZ row order. Top-level `tcp` records `parent_frame`, `position_m`, and
+`orientation_xyzw` from the generation's TCP configuration, relative to its parent
+frame. Top-level `approach_distance_m` records the generation's configured
+`sampling.pregrasp_distance_m`; it is the sampled pregrasp offset, not a measured
+displacement from the final stable closure pose. Both values come from the saved
+manifest, so exporting later does not substitute current configuration values.
+These local indices are not the NPZ candidate IDs used
 by replay's `--grasp-id`. Each entry also contains the robot snapshot's `name`,
 the actual stable closure pose (trial 0), and `approach_axis_object`.
 `closed_joint_positions_m` maps each gripper joint name to its measured position
