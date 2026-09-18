@@ -1,0 +1,12 @@
+objects:
+- name: bottle
+  source: Assets/Object/Rigid/bottle/bottle.usd
+  root_prim: /root
+  metadata: Assets/Object/Rigid/bottle/bottle.json
+  physics:
+    mass_kg: 0.2
+    static_friction: 1.0
+    dynamic_friction: 1.0
+    restitution: 0.0
+    source: bottle.json physics; override USD mass 0.1 kg with metadata 0.2 kg; friction
+      initializes both coefficients; zero restitution is the USD fallback.

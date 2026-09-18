@@ -374,6 +374,7 @@ class RunConfig:
     manifest: Path
     cache: Path
     output: Path
+    grasp_regions: Path | None
     device: int
     environments: int
     seed: int
@@ -389,11 +390,29 @@ class RunConfig:
 
 def load_run(path: Path) -> RunConfig:
     data = read_mapping(path)
-    fields(
-        data,
-        "grippers manifest cache output device environments seed target_successes "
-        "candidate_budget time_budget_s object_position_m sampling posture validation",
-    )
+    required = {
+        "grippers",
+        "manifest",
+        "cache",
+        "output",
+        "device",
+        "environments",
+        "seed",
+        "target_successes",
+        "candidate_budget",
+        "time_budget_s",
+        "object_position_m",
+        "sampling",
+        "posture",
+        "validation",
+    }
+    optional = {"grasp_regions"}
+    received = set(data)
+    if not required <= received or not received <= required | optional:
+        raise ValueError(
+            f"Expected fields {sorted(required)} with optional {sorted(optional)}; "
+            f"received {sorted(received)}"
+        )
     for name in ("environments", "target_successes", "candidate_budget"):
         if type(data[name]) is not int or data[name] < 1:
             raise ValueError(f"{name} must be a positive integer")
@@ -412,6 +431,7 @@ def load_run(path: Path) -> RunConfig:
         Path(data["manifest"]),
         Path(data["cache"]),
         Path(data["output"]),
+        Path(data["grasp_regions"]) if "grasp_regions" in data else None,
         data["device"],
         data["environments"],
         data["seed"],

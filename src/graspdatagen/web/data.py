@@ -134,6 +134,22 @@ def load_dataset(
         base_body = definition["extraction"]["base_body"]
         names = definition["joint_names"]
         tcp = pair.arrays["T_B_tcp"]
+
+        # Exact prepared surface used by region sampling.  Keep this separate
+        # from the visual USD mesh because surface_payload() may alter topology
+        # for rendering (for example when splitting face-varying UV vertices).
+        with np.load(pair.object / "geometry.npz", allow_pickle=False) as geometry:
+            annotation_vertices = np.asarray(
+                geometry["surface_vertices_m"], dtype=np.float64
+            )
+            annotation_faces = np.asarray(
+                geometry["surface_faces"], dtype=np.int64
+            )
+        annotation_mesh = {
+            "vertices": annotation_vertices.ravel().tolist(),
+            "faces": annotation_faces.ravel().tolist(),
+        }
+
         provenance = "Prepared assets"
     else:
         object_config = next((o for o in load_objects(objects) if o.name == data["object"]), None)
@@ -157,6 +173,7 @@ def load_dataset(
         base_body = config.base_body
         names = config.robot_snapshot["gripper"]["joint_names"]
         tcp = np.asarray(tcp_definition(config)["T_B_tcp"])
+        annotation_mesh = None
         provenance = "Source assets"
     if any(UsdGeom.GetStageMetersPerUnit(s) != 1 for s in (object_stage, gripper_stage)):
         raise ValueError("Web viewer requires metre-authored USD assets")
@@ -209,6 +226,7 @@ def load_dataset(
         "provenance": provenance,
         "candidates": candidates,
         "object_meshes": meshes,
+        "annotation_mesh": annotation_mesh,
         "parts": parts,
         "bounds": [vertices.min(axis=0).tolist(), vertices.max(axis=0).tolist()],
     }

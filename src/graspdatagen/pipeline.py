@@ -214,6 +214,7 @@ def generate_pair(
         config.posture,
         config.seed,
         f"cuda:{config.device}",
+        config.grasp_regions,
         state["round"],
         state["cursor"],
     )

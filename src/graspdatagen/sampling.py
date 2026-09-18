@@ -88,6 +88,7 @@ class Sampler:
         posture: PostureConfig,
         seed: int,
         device: str,
+        grasp_regions: Path | None,
         round_index: int,
         cursor: int,
     ) -> None:
@@ -96,6 +97,88 @@ class Sampler:
         self.seed: int = seed
         self.posture: PostureConfig = posture
         self.round_index: int = round_index
+        with np.load(pair.object / "geometry.npz", allow_pickle=False) as data:
+            self.surface: trimesh.Trimesh = trimesh.Trimesh(
+                data["surface_vertices_m"], data["surface_faces"], process=False
+            )
+            hulls = [
+                trimesh.Trimesh(
+                    data[key],
+                    data[key.replace("vertices_m", "faces")],
+                    process=False,
+                )
+                for key in data.files
+                if key.startswith("hull_") and key.endswith("vertices_m")
+            ]
+
+        self.region_weights: np.ndarray | None = None
+        self.region_hash: str | None = None
+
+        region_path: Path | None = None
+        if grasp_regions is not None:
+            if not grasp_regions.is_dir():
+                raise ValueError(
+                    f"Grasp region directory not found: {grasp_regions}"
+                )
+            region_path = (
+                grasp_regions / f"{pair.object_manifest['name']}.npz"
+            )
+
+        if region_path is not None and region_path.is_file():
+            with np.load(region_path, allow_pickle=False) as region:
+                if set(region.files) != {
+                    "allowed_faces",
+                    "surface_vertices_m",
+                    "surface_faces",
+                }:
+                    raise ValueError(
+                        "Grasp region annotation must contain "
+                        "allowed_faces, surface_vertices_m and surface_faces"
+                    )
+
+                allowed_faces = np.asarray(region["allowed_faces"], dtype=np.int64)
+                annotated_vertices = np.asarray(region["surface_vertices_m"])
+                annotated_faces = np.asarray(region["surface_faces"], dtype=np.int64)
+
+            if not np.array_equal(
+                annotated_vertices, np.asarray(self.surface.vertices)
+            ):
+                raise ValueError(
+                    "Grasp region annotation vertices do not match prepared surface"
+                )
+            if not np.array_equal(
+                annotated_faces, np.asarray(self.surface.faces)
+            ):
+                raise ValueError(
+                    "Grasp region annotation faces do not match prepared surface"
+                )
+
+            if (
+                allowed_faces.ndim != 1
+                or not len(allowed_faces)
+                or allowed_faces.min() < 0
+                or allowed_faces.max() >= len(self.surface.faces)
+                or len(np.unique(allowed_faces)) != len(allowed_faces)
+            ):
+                raise ValueError("Invalid grasp region face indices")
+
+            self.region_weights = np.zeros(
+                len(self.surface.faces), dtype=np.float64
+            )
+            self.region_weights[allowed_faces] = self.surface.area_faces[
+                allowed_faces
+            ]
+
+            if (
+                not np.isfinite(self.region_weights).all()
+                or self.region_weights.sum() <= 0
+            ):
+                raise ValueError(
+                    "Grasp region has no positive finite surface area"
+                )
+
+            self.region_hash = file_hash(region_path)
+
         self.identity: str = digest(
             {
                 "gripper": pair.gripper.name,
@@ -103,21 +186,13 @@ class Sampler:
                 "sampling": asdict(config),
                 "posture": asdict(posture),
                 "seed": seed,
+                "grasp_region": self.region_hash,
                 "implementation": {
                     name: file_hash(Path(__file__).with_name(name))
                     for name in ("sampling.py", "geometry.py", "kernels.py")
                 },
             }
         )
-        with np.load(pair.object / "geometry.npz", allow_pickle=False) as data:
-            self.surface: trimesh.Trimesh = trimesh.Trimesh(
-                data["surface_vertices_m"], data["surface_faces"], process=False
-            )
-            hulls = [
-                trimesh.Trimesh(data[key], data[key.replace("vertices_m", "faces")], process=False)
-                for key in data.files
-                if key.startswith("hull_") and key.endswith("vertices_m")
-            ]
         self.source: SurfaceQueries = SurfaceQueries(self.surface, device)
         self.proxy: SurfaceQueries = SurfaceQueries(trimesh.util.concatenate(hulls), device)
         self.radius: float = float(np.linalg.norm(self.surface.extents))
@@ -136,7 +211,12 @@ class Sampler:
     def _contacts(self) -> CandidateBatch:
         c = self.config
         seed = int(digest([self.seed, self.round_index])[:16], 16)
-        points, faces = trimesh.sample.sample_surface(self.surface, c.surface_samples, seed=seed)
+        points, faces = trimesh.sample.sample_surface(
+            self.surface,
+            c.surface_samples,
+            face_weight=self.region_weights,
+            seed=seed,
+        )
         normals = self.surface.face_normals[faces]
         epsilon = self.radius * 1e-5
         hit = self.source.rays(points - epsilon * normals, -normals, self.radius)

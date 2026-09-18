@@ -85,6 +85,26 @@ def validate(
     step_number = 0
 
     def run_trial(trial: int) -> None:
+        stage_time = np.zeros(len(STAGES), dtype=np.float64)
+        stage_steps = np.zeros(len(STAGES), dtype=np.int64)
+        stage_alive_start = np.full(len(STAGES), -1, dtype=np.int64)
+        stage_alive_end = np.full(len(STAGES), -1, dtype=np.int64)
+
+        def print_stage_profile() -> None:
+            print(
+                "P2 PROFILE trial="
+                + str(trial)
+                + " | "
+                + " | ".join(
+                    f"{STAGES[i]}: {stage_time[i]:.3f}s/"
+                    f"{stage_steps[i]}steps/"
+                    f"{stage_alive_start[i]}->{stage_alive_end[i]}alive"
+                    for i in range(len(STAGES))
+                    if stage_steps[i] > 0
+                ),
+                flush=True,
+            )
+
         scene.reset(matrix_poses(initial_object), matrix_poses(pre_base), batch.pregrasp_joints)
         if scene.runtime.gui:
             positions = np.concatenate((initial_object[:, :3, 3], pre_base[:, :3, 3]))
@@ -100,6 +120,10 @@ def validate(
 
         def observe(stage: int, holding: bool, settling: bool) -> dict[str, np.ndarray]:
             nonlocal step_number
+            observe_started = time.perf_counter()
+            if stage_alive_start[stage] < 0:
+                stage_alive_start[stage] = int((failure[:, trial] == 0).sum())
+
             scene.runtime.step()
             step_number += 1
             state = scene.read()
@@ -205,6 +229,10 @@ def validate(
                 trace_lists["contact"].append(state["contact"].copy())
                 trace_lists["velocity"].append(state["velocity"].copy())
                 trace_lists["stage"].append(np.array([stage, step_number], dtype=np.int64))
+
+            stage_time[stage] += time.perf_counter() - observe_started
+            stage_steps[stage] += 1
+            stage_alive_end[stage] = int((failure[:, trial] == 0).sum())
             return state
 
         opening_invalid = (
@@ -225,6 +253,7 @@ def validate(
             if (failure[:, trial] != 0).all():
                 break
         if (failure[:, trial] != 0).all():
+            print_stage_profile()
             return
         stable[:] = 0
         missing[:] = 0
@@ -241,6 +270,7 @@ def validate(
         actual_tcp[:, trial] = np.linalg.inv(baseline)
         actual_joints[:, trial] = state["joints"]
         if (failure[:, trial] != 0).all():
+            print_stage_profile()
             return
         scene.gravity(True)
         stable[:] = 0
@@ -248,37 +278,52 @@ def validate(
         for step in range(round(p.hold_s * p.steps_per_second)):
             observe(3, True, step == round(p.hold_s * p.steps_per_second) - 1)
         if (failure[:, trial] != 0).all():
-            return
-        for direction in range(accelerations.shape[2]):
-            stable[:] = 0
-            for _ in range(round(p.disturbance_s * p.steps_per_second)):
-                scene.force(accelerations[:, trial, direction])
-                observe(4, True, False)
-            scene.force(zero_force)
-            for step in range(round(p.recovery_s * p.steps_per_second)):
-                observe(4, True, step == round(p.recovery_s * p.steps_per_second) - 1)
-            if (failure[:, trial] != 0).all():
-                break
-        scene.force(zero_force)
-        if (failure[:, trial] != 0).all():
+            print_stage_profile()
             return
         # World X is horizontal. Rotate the held state around each target TCP;
+        # Apply the configured disturbance directions during that existing motion
+        # so validation adds no standalone disturbance or recovery physics steps.
         # the object remains dynamic throughout the motion and final gravity hold.
         pivot = (target_base @ T_B_tcp)[:, :3, 3]
         base = target_base.copy()
-        for step in range(round(p.invert_s * p.steps_per_second)):
-            fraction = (step + 1) / round(p.invert_s * p.steps_per_second)
+        invert_steps = round(p.invert_s * p.steps_per_second)
+        direction_count = accelerations.shape[2]
+
+        for step in range(invert_steps):
+            fraction = (step + 1) / invert_steps
             blend = fraction**3 * (10 - 15 * fraction + 6 * fraction**2)
             rotation = Rotation.from_rotvec([np.pi * blend, 0, 0]).as_matrix()
             base[:, :3, :3] = rotation @ target_base[:, :3, :3]
             base[:, :3, 3] = pivot + (target_base[:, :3, 3] - pivot) @ rotation.T
+
+            direction = min(
+                step * direction_count // invert_steps,
+                direction_count - 1,
+            )
+            scene.force(accelerations[:, trial, direction])
             scene.move_base(matrix_poses(base))
-            observe(5, True, False)
+
+            # Reuse the first inversion tick for the removed disturbance stage.
+            # This preserves the existing seven-stage output schema without
+            # adding a physics step; all remaining ticks belong to inversion.
+            observe(4 if step == 0 else 5, True, False)
+
+            if (failure[:, trial] != 0).all():
+                scene.force(zero_force)
+                print(
+                    f"P2 EARLY_EXIT trial={trial} stage=invert "
+                    f"step={step + 1}/{invert_steps}",
+                    flush=True,
+                )
+                print_stage_profile()
+                return
         scene.force(zero_force)
         stable[:] = 0
         for step in range(round(p.inverted_hold_s * p.steps_per_second)):
             observe(6, True, step == round(p.inverted_hold_s * p.steps_per_second) - 1)
         scene.force(zero_force)
+
+        print_stage_profile()
 
     for trial in range(trials):
         trial_started = time.perf_counter()

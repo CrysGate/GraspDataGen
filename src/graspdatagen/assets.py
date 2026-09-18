@@ -254,15 +254,35 @@ def retain_object_dependencies(stage: Usd.Stage) -> None:
     pending = list(roots)
     while pending:
         for prim in Usd.PrimRange(stage.GetPrimAtPath(pending.pop())):
-            targets = [target for rel in prim.GetRelationships() for target in rel.GetTargets()]
-            targets += [target for attr in prim.GetAttributes() for target in attr.GetConnections()]
-            for target in targets:
-                top = target.GetPrimPath().GetPrefixes()[0]
-                if top not in roots:
+            for rel in prim.GetRelationships():
+                for target in list(rel.GetTargets()):
+                    top = target.GetPrimPath().GetPrefixes()[0]
+                    if top in roots:
+                        continue
                     if not stage.GetPrimAtPath(top):
+                        if rel.GetName().startswith("material:binding"):
+                            print(
+                                f"P1: dropping unresolved material binding "
+                                f"{rel.GetPath()} -> {target}",
+                                flush=True,
+                            )
+                            rel.RemoveTarget(target)
+                            continue
                         raise ValueError(f"Missing selected-object dependency: {target}")
                     roots.add(top)
                     pending.append(top)
+
+            for attr in prim.GetAttributes():
+                for target in attr.GetConnections():
+                    top = target.GetPrimPath().GetPrefixes()[0]
+                    if top not in roots:
+                        if not stage.GetPrimAtPath(top):
+                            raise ValueError(
+                                f"Missing selected-object dependency: {target}"
+                            )
+                        roots.add(top)
+                        pending.append(top)
+
     for prim in list(stage.GetPseudoRoot().GetChildren()):
         if prim.GetPath() not in roots:
             stage.RemovePrim(prim.GetPath())
@@ -345,6 +365,7 @@ def inspect_object(config: ObjectConfig) -> dict[str, Any]:
     surface = trimesh.util.concatenate(meshes)
     surface.apply_scale(unit)
     mass_api = UsdPhysics.MassAPI(body)
+    usd_mass = mass_api.GetMassAttr().Get()
     metadata = json.loads(config.metadata.read_text())["physics"]
     if not np.isclose(config.mass_kg, metadata["mass"]):
         raise ValueError("P1 manifest mass must explicitly select the supplied metadata mass")
@@ -376,7 +397,7 @@ def inspect_object(config: ObjectConfig) -> dict[str, Any]:
         "source_faces": len(surface.faces),
         "surface_prims": [str(p.GetPath()) for p in surfaces],
         "colliders": materials,
-        "usd_mass_kg": float(mass_api.GetMassAttr().Get()),
+        "usd_mass_kg": float(usd_mass) if usd_mass is not None else None,
         "metadata_physics": metadata,
         "resolved_mass_kg": config.mass_kg,
         "resolved_material": asdict(config.material),
@@ -444,19 +465,24 @@ def prepare_object(runtime: PhysxRuntime, config: ObjectConfig, cache_root: Path
         mass.CreateMassAttr(config.mass_kg)
         source_body = stage.GetPrimAtPath(inspection["body_prim"])
         source_mass = UsdPhysics.MassAPI(source_body)
-        com = np.asarray(source_mass.GetCenterOfMassAttr().Get(), dtype=np.float64)
-        inertia = np.asarray(source_mass.GetDiagonalInertiaAttr().Get(), dtype=np.float64)
-        if np.isfinite(com).all():
+
+        com_attr = source_mass.GetCenterOfMassAttr()
+        if com_attr.HasAuthoredValueOpinion():
+            com = np.asarray(com_attr.Get(), dtype=np.float64)
+            if com.shape != (3,) or not np.isfinite(com).all():
+                raise ValueError("Invalid authored centre of mass")
+
             from graspdatagen.geometry import transform_points
 
             resolved_com = (
                 transform_points(com[None, :], relative_transform(source_body, root))[0] * unit
             )
             mass.CreateCenterOfMassAttr(Gf.Vec3f(*resolved_com))
-        elif not np.isneginf(com).all():
-            raise ValueError("Invalid authored centre of mass")
-        if (inertia != 0).any():
-            if not np.isfinite(inertia).all() or (inertia <= 0).any():
+
+        inertia_attr = source_mass.GetDiagonalInertiaAttr()
+        if inertia_attr.HasAuthoredValueOpinion():
+            inertia = np.asarray(inertia_attr.Get(), dtype=np.float64)
+            if inertia.shape != (3,) or not np.isfinite(inertia).all() or (inertia <= 0).any():
                 raise ValueError("Invalid authored inertia")
             # P1 does not silently reinterpret inertia under a changed mass or body frame.
             if config.mass_kg != inspection["usd_mass_kg"] or source_body != root or unit != 1:
@@ -472,7 +498,12 @@ def prepare_object(runtime: PhysxRuntime, config: ObjectConfig, cache_root: Path
             transform = relative_transform(stage.GetPrimAtPath(item["collider"]), root)
             transform[:3, :] *= unit
             set_transform(prim, transform)
-            UsdShade.MaterialBindingAPI(prim).UnbindAllBindings()
+            # CopySpec may preserve material bindings on descendant GeomSubsets.
+            # Those bindings can target source-only materials that are not copied
+            # into object.usdc. Remove all source material bindings recursively;
+            # the prepared collider receives GraspDataGen's resolved material below.
+            for descendant in Usd.PrimRange(prim):
+                UsdShade.MaterialBindingAPI(descendant).UnbindAllBindings()
             collider_prims.append(prim)
         bind_material(prepared, collider_prims, config.material)
         prepared.GetRootLayer().Save()

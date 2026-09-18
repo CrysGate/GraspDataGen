@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+
+import numpy as np
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -13,9 +15,9 @@ from fastapi import HTTPException
 from nicegui import app, run, ui
 
 from graspdatagen.config import load_objects
-from graspdatagen.web_data import load_dataset
+from graspdatagen.web.data import load_dataset
 
-STATIC = Path(__file__).with_name("web_static")
+STATIC = Path(__file__).with_name("static")
 
 
 def serve(
@@ -25,6 +27,7 @@ def serve(
     host: str,
     port: int,
     overview_faces: int,
+    grasp_regions: Path,
 ) -> None:
     @lru_cache(maxsize=4)
     def dataset(index: int) -> dict[str, Any]:
@@ -80,6 +83,62 @@ def serve(
                 await command("mode", mode.value)
                 visible_count.set_text(str(len(state["candidates"]) if mode.value == "all" else 1))
 
+        async def workspace_changed() -> None:
+            if state["ready"]:
+                await command("workspace", workspace_mode.value)
+                status.set_text(
+                    "Region annotation"
+                    if workspace_mode.value == "annotate"
+                    else "Scene ready"
+                )
+
+        async def save_region() -> None:
+            if not state["ready"]:
+                return
+
+            index = int(dataset_select.value)
+            loaded = dataset(index)
+            annotation = loaded.get("annotation_mesh")
+            if annotation is None:
+                ui.notify(
+                    "This dataset has no prepared annotation surface",
+                    type="negative",
+                )
+                return
+
+            faces = np.asarray(
+                await command("annotationFaces"),
+                dtype=np.int64,
+            )
+
+            vertices = np.asarray(
+                annotation["vertices"], dtype=np.float64
+            ).reshape(-1, 3)
+            topology = np.asarray(
+                annotation["faces"], dtype=np.int64
+            ).reshape(-1, 3)
+
+            if faces.size and (
+                faces.min() < 0 or faces.max() >= len(topology)
+            ):
+                ui.notify("Invalid annotated face index", type="negative")
+                return
+
+            grasp_regions.mkdir(parents=True, exist_ok=True)
+            output = grasp_regions / f"{loaded['object']}.npz"
+
+            np.savez_compressed(
+                output,
+                allowed_faces=np.unique(faces),
+                surface_vertices_m=vertices,
+                surface_faces=topology,
+            )
+
+            ui.notify(
+                f"Saved {len(np.unique(faces))} faces → {output}",
+                type="positive",
+            )
+
         async def appearance() -> None:
             if state["ready"]:
                 await command(
@@ -108,8 +167,50 @@ def serve(
             loading.set_visibility(True)
             status.set_text("Loading assets")
             try:
-                metadata = await command("load", int(dataset_select.value))
+                dataset_index = int(dataset_select.value)
+                metadata = await command("load", dataset_index)
                 state.update(candidates=metadata["candidates"], ready=True)
+
+                loaded = dataset(dataset_index)
+                annotation = loaded.get("annotation_mesh")
+                existing = grasp_regions / f"{loaded['object']}.npz"
+
+                allowed_faces: list[int] = []
+                if annotation is not None and existing.is_file():
+                    vertices = np.asarray(
+                        annotation["vertices"], dtype=np.float64
+                    ).reshape(-1, 3)
+                    faces = np.asarray(
+                        annotation["faces"], dtype=np.int64
+                    ).reshape(-1, 3)
+
+                    with np.load(existing, allow_pickle=False) as region:
+                        annotated_vertices = np.asarray(
+                            region["surface_vertices_m"]
+                        )
+                        annotated_faces = np.asarray(
+                            region["surface_faces"], dtype=np.int64
+                        )
+
+                        if not np.array_equal(
+                            vertices, annotated_vertices
+                        ) or not np.array_equal(
+                            faces, annotated_faces
+                        ):
+                            raise ValueError(
+                                f"Region topology mismatch: {existing}"
+                            )
+
+                        allowed_faces = (
+                            np.asarray(
+                                region["allowed_faces"], dtype=np.int64
+                            )
+                            .reshape(-1)
+                            .tolist()
+                        )
+
+                await command("setAnnotation", allowed_faces)
+                await command("workspace", workspace_mode.value)
                 title.set_text(metadata["object"])
                 robot_label.set_text(metadata["robot"].upper())
                 total_count.set_text(str(len(state["candidates"])))
@@ -165,6 +266,31 @@ def serve(
                         ui.label("Visible").classes("muted small")
                 ui.separator()
                 with ui.column().classes("controls w-full") as controls:
+                    ui.label("WORKSPACE").classes("eyebrow")
+                    workspace_mode = ui.toggle(
+                        {
+                            "preview": "Preview",
+                            "annotate": "Annotate",
+                        },
+                        value="preview",
+                        on_change=workspace_changed,
+                    ).props("no-caps unelevated")
+
+                    save_region_button = (
+                        ui.button(
+                            "Save region",
+                            icon="save",
+                            on_click=save_region,
+                        )
+                        .props("outline no-caps")
+                        .classes("w-full")
+                    )
+
+                    ui.label(
+                        "Annotate: click = paint · Shift+click = erase"
+                    ).classes("muted small")
+
+                    ui.separator()
                     ui.label("DISPLAY").classes("eyebrow")
                     mode = ui.toggle(
                         {"single": "Single grasp", "all": "All grasps"},
@@ -328,6 +454,12 @@ def main() -> None:
         default=3000,
         help="Per-mesh triangle budget in all-grasps mode; single mode is full detail",
     )
+    parser.add_argument(
+        "--grasp-regions",
+        type=Path,
+        default=Path("annotations/grasp_regions"),
+        help="Directory containing grasp-region NPZ annotations",
+    )
     args = parser.parse_args()
     if args.overview_faces < 100:
         parser.error("--overview-faces must be at least 100")
@@ -349,6 +481,7 @@ def main() -> None:
         args.host,
         args.port,
         args.overview_faces,
+        args.grasp_regions,
     )
 
 

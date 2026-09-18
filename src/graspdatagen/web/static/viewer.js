@@ -17,6 +17,9 @@ async function createGraspViewer(id) {
   let axes = new THREE.AxesHelper(1);
   let opacity = 0.3;
   let colorMode = 'direction';
+  let workspaceMode = 'preview';
+  let annotationMesh = null;
+  let annotationFaces = new Set();
   let center = new THREE.Vector3();
   let radius = 1;
   const highlight = new THREE.Color('#d69639');
@@ -34,6 +37,26 @@ async function createGraspViewer(id) {
     return geometry;
   }
 
+  function refreshAnnotation() {
+    if (!annotationMesh) return;
+    const colors = annotationMesh.geometry.getAttribute('color');
+    const base = new THREE.Color('#8b9599');
+    const selectedColor = new THREE.Color('#e06a42');
+
+    for (let face = 0; face < colors.count / 3; face++) {
+      const color = annotationFaces.has(face) ? selectedColor : base;
+      for (let corner = 0; corner < 3; corner++) {
+        colors.setXYZ(
+          face * 3 + corner,
+          color.r,
+          color.g,
+          color.b,
+        );
+      }
+    }
+    colors.needsUpdate = true;
+  }
+
   function directionColor(index) {
     if (colorMode === 'uniform') return new THREE.Color('#419b90');
     const axis = data.candidates[index].approach_axis_object;
@@ -47,7 +70,8 @@ async function createGraspViewer(id) {
   function refresh() {
     if (!data) return;
     for (const group of groups) {
-      group.all.visible = displayMode === 'all';
+      group.all.visible = workspaceMode === 'preview' && displayMode === 'all';
+      group.single.visible = workspaceMode === 'preview';
       group.all.material.opacity = opacity;
       for (let i = 0; i < data.candidates.length; i++) {
         group.all.setColorAt(i, directionColor(i));
@@ -80,6 +104,8 @@ async function createGraspViewer(id) {
     textures.forEach(t => t.dispose());
     content.clear();
     groups = [];
+    annotationMesh = null;
+    annotationFaces = new Set();
   }
 
   const api = {
@@ -104,6 +130,35 @@ async function createGraspViewer(id) {
         }
         objectGroup.add(new THREE.Mesh(geometry(mesh), material));
       }
+
+      if (data.annotation_mesh) {
+        const indexed = geometry(data.annotation_mesh);
+        const annotationGeometry = indexed.toNonIndexed();
+        indexed.dispose();
+
+        const count = annotationGeometry.getAttribute('position').count;
+        annotationGeometry.setAttribute(
+          'color',
+          new THREE.Float32BufferAttribute(
+            new Float32Array(count * 3),
+            3,
+          ),
+        );
+
+        annotationMesh = new THREE.Mesh(
+          annotationGeometry,
+          new THREE.MeshStandardMaterial({
+            vertexColors: true,
+            roughness: 0.7,
+            metalness: 0.0,
+            side: THREE.DoubleSide,
+          }),
+        );
+        annotationMesh.visible = false;
+        content.add(annotationMesh);
+        refreshAnnotation();
+      }
+
       for (const part of data.parts) {
         for (const mesh of part.meshes) {
           const g = geometry(mesh);
@@ -146,6 +201,22 @@ async function createGraspViewer(id) {
     },
     select(index) { selected = index; refresh(); },
     mode(value) { displayMode = value; refresh(); },
+
+    workspace(value) {
+      workspaceMode = value;
+      objectGroup.visible = value === 'preview';
+      if (annotationMesh) annotationMesh.visible = value === 'annotate';
+      refresh();
+    },
+
+    setAnnotation(faces) {
+      annotationFaces = new Set(faces || []);
+      refreshAnnotation();
+    },
+
+    annotationFaces() {
+      return Array.from(annotationFaces).sort((a, b) => a - b);
+    },
     appearance(value, showObject, showAxes, showGrid, wireframe, color) {
       opacity = value;
       colorMode = color;
@@ -212,8 +283,29 @@ async function createGraspViewer(id) {
   let down = {x: 0, y: 0};
   element.renderer.domElement.addEventListener('pointerdown', e => { down = {x: e.clientX, y: e.clientY}; });
   element.renderer.domElement.addEventListener('pointerup', event => {
-    if (!data || displayMode !== 'all' || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
+    if (!data || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
+
     const rect = element.renderer.domElement.getBoundingClientRect();
+
+    if (workspaceMode === 'annotate' && annotationMesh) {
+      const pointer = new THREE.Vector2(
+        (event.clientX - rect.left) / rect.width * 2 - 1,
+        -(event.clientY - rect.top) / rect.height * 2 + 1,
+      );
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(pointer, element.camera);
+      const hits = ray.intersectObject(annotationMesh, false);
+
+      if (hits.length && hits[0].faceIndex !== undefined) {
+        const face = hits[0].faceIndex;
+        if (event.shiftKey) annotationFaces.delete(face);
+        else annotationFaces.add(face);
+        refreshAnnotation();
+      }
+      return;
+    }
+
+    if (displayMode !== 'all') return;
     const pointer = new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1,
       -(event.clientY - rect.top) / rect.height * 2 + 1);
     const ray = new THREE.Raycaster();
