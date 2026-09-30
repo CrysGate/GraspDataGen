@@ -13,7 +13,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from graspdatagen.assets import file_hash, prepare_object, source_fingerprint
-from graspdatagen.config import RunConfig, digest, load_gripper, load_objects
+from graspdatagen.config import RunConfig, digest, load_gripper
 from graspdatagen.geometry import pose_matrices
 from graspdatagen.grippers import prepare_gripper
 from graspdatagen.records import FAILURES, METRICS, STAGES, PreparedPair
@@ -35,20 +35,15 @@ def generate(runtime: PhysxRuntime, config: RunConfig) -> list[dict[str, Any]]:
     prepared_objects: dict[str, Path] = {}
     invalid_objects: dict[str, dict[str, str]] = {}
     preparation_seconds: dict[str, float] = {}
-    objects = load_objects(config.manifest)
+    objects = config.objects
     sources = [item.source for item in objects]
     sources.extend(load_gripper(path).source for path in config.grippers)
-    fingerprints: dict[str, Any] = {"assets": {}, "metadata": {}}
+    fingerprints: dict[str, Any] = {"assets": {}}
     for path in sources:
         try:
             fingerprints["assets"][str(path)] = source_fingerprint(path)
         except (ValueError, FileNotFoundError) as error:
             fingerprints["assets"][str(path)] = {"error": str(error)}
-    for item in objects:
-        try:
-            fingerprints["metadata"][str(item.metadata)] = file_hash(item.metadata)
-        except FileNotFoundError as error:
-            fingerprints["metadata"][str(item.metadata)] = {"error": str(error)}
     input_path = config.output / "inputs.json"
     if input_path.exists():
         if json.loads(input_path.read_text()) != fingerprints:
@@ -79,8 +74,6 @@ def generate(runtime: PhysxRuntime, config: RunConfig) -> list[dict[str, Any]]:
         )
     for gripper_path in config.grippers:
         gripper = load_gripper(gripper_path)
-        if gripper.name not in config.posture.wrist_up_axes_base:
-            raise ValueError(f"Missing wrist mounting-side up axis: {gripper.name}")
         runtime.config = RuntimeConfig(config.device, gripper.calibration.steps_per_second)
         try:
             prepared = prepare_gripper(runtime, gripper, config.cache)
@@ -270,7 +263,7 @@ def generate_pair(
             scene = GraspScene(runtime, pair, len(batch), config.validation)
         seeds, acceleration = trial_conditions(batch, config.validation, config.seed)
         initial = np.tile(np.eye(4), (len(batch), 1, 1))
-        up = np.asarray(config.posture.object_up_axis)
+        up = np.asarray(pair.object_manifest["config"]["up_axis"])
         alignment, _ = Rotation.align_vectors(np.array([[0.0, 0.0, 1.0]]), up[None, :])
         for i, candidate_id in enumerate(batch.ids):
             yaw = np.random.default_rng(int(candidate_id)).uniform(0, 2 * np.pi)

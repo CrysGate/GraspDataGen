@@ -1,28 +1,33 @@
-# GraspDataGen 中文说明
+# GraspDataGen
 
-GraspDataGen 基于 Isaac Sim 6.0.1、PhysX 和 Warp，从刚体 USD/USDZ 资产生成并验证平行夹爪抓取数据集。
+基于 Isaac Sim 6.0.1、PhysX 和 Warp，为刚体 USD/USDZ 物体生成并验证平行夹爪抓取。支持 Piper 和 ARX-X5。
 
 ## 快速开始
 
+需要 Linux x86_64、Python 3.12 和 [uv](https://docs.astral.sh/uv/)，物理仿真需要 NVIDIA GPU。按[安装说明](docs/installation.md)准备资产后，在仓库根目录运行：
+
 ```bash
 uv sync --locked
-uv run graspdatagen generate --config configs/runs/production.yaml
+uv run --locked graspdatagen inspect --manifest configs/objects/our_assets.yaml --output outputs/inspect.json
+uv run --locked graspdatagen generate --config configs/runs/production.yaml
+uv run --locked python -m graspdatagen.web
 ```
 
-常用命令：
+打开 http://127.0.0.1:8080 查看结果。资产检查和 Web 查看使用 CPU；GPU 命令在沙箱外的宿主机执行。
 
-```bash
-uv run graspdatagen export --run outputs/our-assets/piper--bubble_tea_cup_300g
-uv run graspdatagen view --grasps outputs/our-assets/piper--bubble_tea_cup_300g/grasps.yaml
-uv run python -m graspdatagen.web
-```
+## 配置与输出
 
-Web 查看器地址为 http://127.0.0.1:8080。恢复任务使用 `--resume`，重放任务使用 `graspdatagen replay`。涉及 GPU 的命令必须在宿主机运行，机器人资产放在 `Assets/`，默认物体资产放在 `Data/our_Assets/`，生成内容写入 `outputs/our-assets/`。
+- 在 `configs/runs/production.yaml` 选择物体、夹爪、GPU 和运行预算。
+- 在 `configs/parameters.yaml` 调整公共采样和验证参数。
+- 运行数据与准备缓存写入 `outputs/`。
+- 抓取结果自动导出到物体 USD 旁的 `grasps-<robot>.yaml`。
+- 配置不变时使用 `generate --resume` 恢复；修改输入或代码后使用新输出目录。
 
-详细说明：
+## 文档
 
-- [安装与 CLI](docs/installation.md)
+- [安装与命令](docs/installation.md)
+- [配置](docs/configuration.md)
 - [Web 查看器](docs/web-viewer.md)
-- [夹爪适配](docs/grippers.md)
-- [采样与恢复](docs/sampling.md)
-- [状态与待办](docs/status.md)
+- [添加夹爪](docs/grippers.md)
+- [采样与预算](docs/sampling.md)
+- [已知限制](docs/status.md)

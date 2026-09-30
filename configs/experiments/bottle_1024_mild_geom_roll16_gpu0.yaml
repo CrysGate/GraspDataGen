@@ -1,0 +1,32 @@
+# Task inputs, resource budgets, and explicit differences from the shared parameters.
+parameters: configs/parameters.yaml
+grippers: [configs/grippers/piper.yaml]
+manifest: configs/objects/bottle_matryoshka.yaml
+cache: outputs/prepared
+output: outputs/bottle_1024_mild_geom_roll16_gpu0-v3
+grasp_regions: annotations/grasp_regions
+device: 0
+environments: 1024
+seed: 20260908
+target_successes: 1024
+candidate_budget: 16384
+time_budget_s: 604800
+objects: [bottle]
+sampling:
+  surface_samples: 4096
+  surface_rounds: 16
+  rolls_per_contact: 16
+  normal_alignment_min: 0.85
+  clearance_m: 0.002
+  dedup_translation_m: 0.002
+  dedup_rotation_rad: 0.1
+  dedup_opening_m: 0.002
+posture:
+  bottom_clearance_m: 0.002
+validation:
+  random_directions: 1
+  hold_s: 0.5
+  final_hold_s: 0.5
+  max_translation_m: 0.003
+  max_rotation_rad: 0.1
+  disturbance_acceleration_m_s2: 0.5

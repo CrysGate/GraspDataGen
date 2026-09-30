@@ -22,7 +22,7 @@ def replay(
     """grasp_id=0 replays the full dataset; a saved positive ID selects one grasp."""
     manifest, arrays = load_dataset(directory)
     pair = PreparedPair.load(Path(manifest["gripper_cache"]), Path(manifest["object_cache"]))
-    profile = ValidationProfile.from_saved_protocol(manifest["protocol"])
+    profile = ValidationProfile(**manifest["protocol"])
     if profile.steps_per_second != runtime.config.steps_per_second:
         raise ValueError("Replay timestep differs from the saved protocol")
     all_candidates = candidates_from_arrays(arrays)

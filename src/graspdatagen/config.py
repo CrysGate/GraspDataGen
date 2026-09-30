@@ -20,6 +20,8 @@ def read_mapping(path: Path) -> dict[str, Any]:
 
 
 def fields(data: dict[str, Any], expected: str) -> None:
+    if not isinstance(data, dict) or not all(isinstance(key, str) for key in data):
+        raise ValueError(f"Expected a mapping with fields {expected}")
     if set(data) != set(expected.split()):
         raise ValueError(f"Expected fields {expected}; received {sorted(data)}")
 
@@ -51,6 +53,24 @@ def digest(data: object) -> str:
     ).hexdigest()
 
 
+def unit_vector(value: list[float]) -> tuple[float, ...]:
+    axis = vector(value, 3)
+    if not np.isclose(np.linalg.norm(axis), 1.0):
+        raise ValueError("Expected a unit vector")
+    return axis
+
+
+def string_sequence(value: list[str]) -> tuple[str, ...]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ValueError("Expected a nonempty YAML list of unique names or paths")
+    return tuple(value)
+
+
 @dataclass(frozen=True)
 class MaterialConfig:
     static_friction: float
@@ -74,7 +94,7 @@ class ObjectConfig:
     name: str
     source: Path
     root_prim: str
-    metadata: Path
+    up_axis: tuple[float, ...]
     mass_kg: float
     material: MaterialConfig
     snapshot: dict[str, Any]
@@ -85,7 +105,7 @@ def load_objects(path: Path) -> list[ObjectConfig]:
     fields(data, "objects")
     result: list[ObjectConfig] = []
     for item in data["objects"]:
-        fields(item, "name source root_prim metadata physics")
+        fields(item, "name source root_prim up_axis physics")
         physics = item["physics"]
         fields(physics, "mass_kg static_friction dynamic_friction restitution source")
         material = MaterialConfig(**{k: v for k, v in physics.items() if k != "mass_kg"})
@@ -94,7 +114,7 @@ def load_objects(path: Path) -> list[ObjectConfig]:
                 str(item["name"]),
                 Path(item["source"]),
                 str(item["root_prim"]),
-                Path(item["metadata"]),
+                unit_vector(item["up_axis"]),
                 positive(physics["mass_kg"]),
                 material,
                 item,
@@ -143,11 +163,13 @@ class GripperConfig:
     finger_colliders: tuple[str, ...]
     approach_axis_base: tuple[float, ...]
     opening_axis_base: tuple[float, ...]
+    wrist_up_axis_base: tuple[float, ...]
     approach_interval_m: tuple[float, ...]
     lateral_interval_m: tuple[float, ...]
     normal_alignment_min: float
     material: MaterialConfig
     sensitivity_friction: tuple[float, ...]
+    calibration_config: Path
     calibration: CalibrationConfig
     robot_snapshot: dict[str, Any]
     snapshot: dict[str, Any]
@@ -158,28 +180,30 @@ def load_gripper(path: Path) -> GripperConfig:
     fields(
         data,
         "name robot_config root_prim base_body retained_bodies retained_joints "
-        "tcp_parent_prim finger_colliders approach_axis_base opening_axis_base "
+        "tcp_parent_prim finger_colliders approach_axis_base opening_axis_base wrist_up_axis_base "
         "contact_region material calibration",
     )
     robot_path = Path(data["robot_config"])
     robot = read_mapping(robot_path)
+    fields(robot, "name usd_path kinematics gripper")
+    fields(robot["kinematics"], "tcp")
+    fields(robot["gripper"], "joint_names command_joint_names finger_body_names")
+    joints = string_sequence(robot["gripper"]["joint_names"])
+    commands = string_sequence(robot["gripper"]["command_joint_names"])
+    fingers = string_sequence(robot["gripper"]["finger_body_names"])
+    if len(joints) != 2 or len(commands) != 1 or commands[0] not in joints or len(fingers) != 2:
+        raise ValueError("Gripper needs two joints, one active command and two finger bodies")
     tcp = robot["kinematics"]["tcp"]
     fields(tcp, "parent_frame position_m orientation_xyzw")
     vector(tcp["position_m"], 3)
     if not np.isclose(np.linalg.norm(vector(tcp["orientation_xyzw"], 4)), 1.0):
         raise ValueError("TCP quaternion must be normalized, in xyzw order")
-    # These external nulls mean 'inherit USD'. No nullable values enter resolved drives.
-    actuator = robot["actuators"]["gripper"]
-    for key in ("stiffness", "damping", "effort_limit_sim", "velocity_limit_sim"):
-        if actuator[key] is not None:
-            raise ValueError(f"P1 requires the authoritative inherit-USD actuator: {key}")
-    approach = vector(data["approach_axis_base"], 3)
-    opening = vector(data["opening_axis_base"], 3)
-    if not np.allclose([np.linalg.norm(approach), np.linalg.norm(opening)], 1.0):
-        raise ValueError("Gripper axes must be unit vectors")
+    # Drives always inherit the source USD; there is no configurable override.
+    approach = unit_vector(data["approach_axis_base"])
+    opening = unit_vector(data["opening_axis_base"])
     if abs(np.dot(approach, opening)) > 1e-8:
         raise ValueError("Approach and opening axes must be perpendicular")
-    if len(data["finger_colliders"]) != 2 or len(robot["gripper"]["command_joint_names"]) != 1:
+    if len(string_sequence(data["finger_colliders"])) != 2:
         raise ValueError("P1 requires two fingers with one active command joint")
     if data["base_body"] not in data["retained_bodies"]:
         raise ValueError("Base body must be retained")
@@ -194,26 +218,32 @@ def load_gripper(path: Path) -> GripperConfig:
     if not 0 < region["normal_alignment_min"] <= 1:
         raise ValueError("Invalid contact normal alignment")
     material = data["material"]
+    fields(material, "static_friction dynamic_friction restitution source sensitivity_friction")
+    calibration_path = Path(data["calibration"])
+    calibration = read_mapping(calibration_path)
+    fields(calibration, " ".join(CalibrationConfig.__dataclass_fields__))
     return GripperConfig(
         data["name"],
         Path(robot["usd_path"]),
         robot_path,
         data["root_prim"],
         data["base_body"],
-        tuple(data["retained_bodies"]),
-        tuple(data["retained_joints"]),
+        string_sequence(data["retained_bodies"]),
+        string_sequence(data["retained_joints"]),
         data["tcp_parent_prim"],
         tuple(data["finger_colliders"]),
         approach,
         opening,
+        unit_vector(data["wrist_up_axis_base"]),
         vector(region["approach_interval_m"], 2),
         vector(region["lateral_interval_m"], 2),
         region["normal_alignment_min"],
         MaterialConfig(**{k: v for k, v in material.items() if k != "sensitivity_friction"}),
         tuple(positive(v) for v in material["sensitivity_friction"]),
-        CalibrationConfig(**data["calibration"]),
+        calibration_path,
+        CalibrationConfig(**calibration),
         robot,
-        data,
+        {**data, "calibration": calibration},
     )
 
 
@@ -307,11 +337,6 @@ class ValidationProfile:
         if self.stable_window_s > min(self.close_s, self.hold_s, self.final_hold_s):
             raise ValueError("Stable window exceeds a holding stage")
 
-    @classmethod
-    def from_saved_protocol(cls, protocol: dict[str, Any]) -> ValidationProfile:
-        """Read current fields from saved manifests that may include retired metadata."""
-        return cls(**{name: protocol[name] for name in cls.__dataclass_fields__})
-
 
 @dataclass(frozen=True)
 class SamplingConfig:
@@ -345,26 +370,13 @@ class SamplingConfig:
 
 @dataclass(frozen=True)
 class PostureConfig:
-    """Upright pickup convention, applied before the holding motions.
+    """Pickup acceptance policy; coordinate axes belong to the prepared assets."""
 
-    Each supported gripper supplies its mounting-side up vector in the base frame.
-    The object up vector is in its original root frame; initial placement preserves it.
-    """
-
-    object_up_axis: tuple[float, ...]
-    wrist_up_axes_base: dict[str, tuple[float, ...]]
     max_approach_up_dot: float
     min_wrist_up_dot: float
     bottom_clearance_m: float
 
     def __post_init__(self) -> None:
-        for axis in (self.object_up_axis, *self.wrist_up_axes_base.values()):
-            if (
-                len(axis) != 3
-                or not np.isfinite(axis).all()
-                or not np.isclose(np.linalg.norm(axis), 1)
-            ):
-                raise ValueError("Posture axes must be finite unit vectors")
         if not -1 <= self.max_approach_up_dot <= 0:
             raise ValueError("Pickup approach cannot point upward")
         if not 0 <= self.min_wrist_up_dot < 1:
@@ -374,8 +386,12 @@ class PostureConfig:
 
 @dataclass(frozen=True)
 class RunConfig:
+    """Resolved task settings. No region directory means full-surface sampling."""
+
     grippers: tuple[Path, ...]
     manifest: Path
+    objects: tuple[ObjectConfig, ...]
+    parameters: Path
     cache: Path
     output: Path
     grasp_regions: Path | None
@@ -393,6 +409,14 @@ class RunConfig:
 
 
 def load_run(path: Path) -> RunConfig:
+    """Resolve one shared parameter file and task-local section overrides.
+
+    Production uses the shared values; GUI and historical experiments override
+    only changed sampling/posture/validation fields. An omitted objects list uses
+    the whole manifest; GUI and bottle experiments select named subsets instead
+    of copying asset definitions. Omitted grasp_regions enables full-surface
+    sampling; a supplied directory enables available per-object annotations.
+    """
     data = read_mapping(path)
     required = {
         "grippers",
@@ -405,12 +429,9 @@ def load_run(path: Path) -> RunConfig:
         "target_successes",
         "candidate_budget",
         "time_budget_s",
-        "object_position_m",
-        "sampling",
-        "posture",
-        "validation",
+        "parameters",
     }
-    optional = {"grasp_regions"}
+    optional = {"objects", "grasp_regions", "sampling", "posture", "validation"}
     received = set(data)
     if not required <= received or not received <= required | optional:
         raise ValueError(
@@ -423,19 +444,42 @@ def load_run(path: Path) -> RunConfig:
     for name in ("device", "seed"):
         if type(data[name]) is not int or data[name] < 0:
             raise ValueError(f"{name} must be a nonnegative integer")
-    if not data["grippers"] or len(set(data["grippers"])) != len(data["grippers"]):
-        raise ValueError("Specify unique gripper configurations")
-    posture = data["posture"]
-    fields(
-        posture,
-        "object_up_axis wrist_up_axes_base max_approach_up_dot min_wrist_up_dot bottom_clearance_m",
-    )
+    grippers = tuple(Path(p) for p in string_sequence(data["grippers"]))
+    parameter_path = Path(data["parameters"])
+    parameters = read_mapping(parameter_path)
+    fields(parameters, "object_position_m sampling posture validation")
+    for name, schema in (
+        ("sampling", SamplingConfig),
+        ("posture", PostureConfig),
+        ("validation", ValidationProfile),
+    ):
+        fields(parameters[name], " ".join(schema.__dataclass_fields__))
+        overrides = data.get(name, {})
+        if not isinstance(overrides, dict) or not set(overrides) <= set(parameters[name]):
+            raise ValueError(f"Unknown {name} override; expected fields {sorted(parameters[name])}")
+        data[name] = {**parameters[name], **overrides}
+    manifest = Path(data["manifest"])
+    objects = load_objects(manifest)
+    if "objects" in data:
+        selected = string_sequence(data["objects"])
+        unknown = set(selected) - {item.name for item in objects}
+        if unknown:
+            raise ValueError(f"Unknown objects in {manifest}: {sorted(unknown)}")
+        objects = [item for item in objects if item.name in selected]
+    data["objects"] = [item.name for item in objects]
+    data["object_position_m"] = parameters["object_position_m"]
+    # None selects unannotated, full-surface sampling in production/GUI runs.
+    regions = Path(data["grasp_regions"]) if "grasp_regions" in data else None
+    if regions is not None and not regions.is_dir():
+        raise ValueError(f"Grasp region directory not found: {regions}")
     return RunConfig(
-        tuple(Path(p) for p in data["grippers"]),
-        Path(data["manifest"]),
+        grippers,
+        manifest,
+        tuple(objects),
+        parameter_path,
         Path(data["cache"]),
         Path(data["output"]),
-        Path(data["grasp_regions"]) if "grasp_regions" in data else None,
+        regions,
         data["device"],
         data["environments"],
         data["seed"],
@@ -444,13 +488,7 @@ def load_run(path: Path) -> RunConfig:
         positive(data["time_budget_s"]),
         vector(data["object_position_m"], 3),
         SamplingConfig(**data["sampling"]),
-        PostureConfig(
-            vector(posture["object_up_axis"], 3),
-            {name: vector(axis, 3) for name, axis in posture["wrist_up_axes_base"].items()},
-            posture["max_approach_up_dot"],
-            posture["min_wrist_up_dot"],
-            positive(posture["bottom_clearance_m"]),
-        ),
+        PostureConfig(**data["posture"]),
         ValidationProfile(**data["validation"]),
         data,
     )

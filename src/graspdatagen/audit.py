@@ -113,7 +113,7 @@ def audit(
 
     initial_object = pose_matrices(arrays["pose_world_object_initial_xyz_xyzw"])
     pair = PreparedPair.load(Path(manifest["gripper_cache"]), Path(manifest["object_cache"]))
-    profile = ValidationProfile.from_saved_protocol(manifest["protocol"])
+    profile = ValidationProfile(**manifest["protocol"])
     candidates = candidates_from_arrays(arrays)
     if not len(candidates):
         raise ValueError("The audit requires a successful nominal grasp")

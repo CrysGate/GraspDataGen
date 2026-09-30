@@ -57,6 +57,8 @@ def tool_signature() -> dict[str, Any]:
             "fields",
             "positive",
             "vector",
+            "unit_vector",
+            "string_sequence",
             "digest",
             "MaterialConfig",
             "ObjectConfig",
@@ -368,9 +370,6 @@ def inspect_object(config: ObjectConfig) -> dict[str, Any]:
     surface.apply_scale(unit)
     mass_api = UsdPhysics.MassAPI(body)
     usd_mass = mass_api.GetMassAttr().Get()
-    metadata = json.loads(config.metadata.read_text())["physics"]
-    if not np.isclose(config.mass_kg, metadata["mass"]):
-        raise ValueError("P1 manifest mass must explicitly select the supplied metadata mass")
     materials = []
     for collider in colliders:
         material, _ = UsdShade.MaterialBindingAPI(collider).ComputeBoundMaterial("physics")
@@ -400,7 +399,6 @@ def inspect_object(config: ObjectConfig) -> dict[str, Any]:
         "surface_prims": [str(p.GetPath()) for p in surfaces],
         "colliders": materials,
         "usd_mass_kg": float(usd_mass) if usd_mass is not None else None,
-        "metadata_physics": metadata,
         "resolved_mass_kg": config.mass_kg,
         "resolved_material": asdict(config.material),
         "automatic_mass_properties": {
@@ -418,7 +416,6 @@ def prepare_object(runtime: PhysxRuntime, config: ObjectConfig, cache_root: Path
     from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
     fingerprint = source_fingerprint(config.source)
-    fingerprint["files"][str(config.metadata)] = file_hash(config.metadata)
     key = cache_identity(fingerprint, config.snapshot)
     destination = cache_root / "objects" / key
     destination.parent.mkdir(parents=True, exist_ok=True)
