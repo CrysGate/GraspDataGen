@@ -22,11 +22,22 @@ async function createGraspViewer(id, timeoutMs) {
   let workspaceMode = 'preview';
   let annotationMesh = null;
   let annotationFaces = new Set();
+  let annotationMode = 'paint';
+  let annotationBrushPercent = 3;
+  let annotationAdjacency = [];
+  let annotationFaceCenters = new Float32Array();
+  let annotationObjectRadius = 1;
+  let annotationHistory = [];
+  let painting = false;
+  let activePointerId = null;
+  let strokeSnapshot = null;
+  let previousPaintFace = null;
   let center = new THREE.Vector3();
   let radius = 1;
   const highlight = new THREE.Color('#d69639');
   const loader = new THREE.TextureLoader();
   element.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const defaultMouseButtons = {...element.controls.mouseButtons};
   const observer = new ResizeObserver(() => element.resize());
   observer.observe(element.$el);
 
@@ -86,6 +97,10 @@ async function createGraspViewer(id, timeoutMs) {
       group.all.instanceColor.needsUpdate = true;
       group.single.matrix.fromArray(group.matrices[selected]);
     }
+    if (!data.candidates.length) {
+      axes.visible = false;
+      return;
+    }
     const pose = data.candidates[selected].pose_object_tcp_xyz_xyzw;
     axes.position.fromArray(pose);
     axes.quaternion.fromArray(pose.slice(3));
@@ -108,6 +123,10 @@ async function createGraspViewer(id, timeoutMs) {
     groups = [];
     annotationMesh = null;
     annotationFaces = new Set();
+    annotationAdjacency = [];
+    annotationFaceCenters = new Float32Array();
+    annotationObjectRadius = 1;
+    annotationHistory = [];
   }
 
   async function progress(message) {
@@ -153,7 +172,57 @@ async function createGraspViewer(id, timeoutMs) {
   }
 
   function buildAnnotation(mesh) {
+    const faceCount = mesh.faces.length / 3;
+    const edgeOwners = new Map();
+    annotationAdjacency = Array.from(
+      {length: faceCount},
+      () => new Set(),
+    );
+
+    for (let face = 0; face < faceCount; face++) {
+      const vertices = [
+        mesh.faces[face * 3],
+        mesh.faces[face * 3 + 1],
+        mesh.faces[face * 3 + 2],
+      ];
+      for (const [a0, b0] of [
+        [vertices[0], vertices[1]],
+        [vertices[1], vertices[2]],
+        [vertices[2], vertices[0]],
+      ]) {
+        const a = Math.min(a0, b0);
+        const b = Math.max(a0, b0);
+        const key = `${a}:${b}`;
+        const owners = edgeOwners.get(key) || [];
+        for (const other of owners) {
+          annotationAdjacency[face].add(other);
+          annotationAdjacency[other].add(face);
+        }
+        owners.push(face);
+        edgeOwners.set(key, owners);
+      }
+    }
+
+    const vertices = mesh.vertices;
+    const faces = mesh.faces;
+    annotationFaceCenters = new Float32Array(faceCount * 3);
+
+    for (let face = 0; face < faceCount; face++) {
+      for (let axis = 0; axis < 3; axis++) {
+        annotationFaceCenters[face * 3 + axis] = (
+          vertices[faces[face * 3] * 3 + axis]
+          + vertices[faces[face * 3 + 1] * 3 + axis]
+          + vertices[faces[face * 3 + 2] * 3 + axis]
+        ) / 3;
+      }
+    }
+
     const indexed = geometry(mesh);
+    indexed.computeBoundingSphere();
+    annotationObjectRadius = Math.max(
+      indexed.boundingSphere?.radius || 0,
+      1e-6,
+    );
     const annotationGeometry = indexed.toNonIndexed();
     indexed.dispose();
 
@@ -178,6 +247,158 @@ async function createGraspViewer(id, timeoutMs) {
     annotationMesh.visible = false;
     content.add(annotationMesh);
     refreshAnnotation();
+  }
+
+  function faceCenter(face) {
+    return new THREE.Vector3(
+      annotationFaceCenters[face * 3],
+      annotationFaceCenters[face * 3 + 1],
+      annotationFaceCenters[face * 3 + 2],
+    );
+  }
+
+  function brushRadius() {
+    return annotationObjectRadius * annotationBrushPercent / 100;
+  }
+
+  function brushFaces(seed, point) {
+    const radius = brushRadius();
+    const radiusSquared = radius * radius;
+    const result = new Set([seed]);
+    const queue = [seed];
+
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const face = queue[cursor];
+      for (const neighbour of annotationAdjacency[face] || []) {
+        if (result.has(neighbour)) continue;
+
+        const offset = faceCenter(neighbour).sub(point);
+        if (offset.lengthSq() <= radiusSquared) {
+          result.add(neighbour);
+          queue.push(neighbour);
+        }
+      }
+    }
+    return result;
+  }
+
+  function shortestFacePath(start, goal) {
+    if (start === null || start === goal) return [goal];
+
+    const queue = [start];
+    const parent = new Map([[start, -1]]);
+
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const face = queue[cursor];
+      for (const neighbour of annotationAdjacency[face] || []) {
+        if (parent.has(neighbour)) continue;
+        parent.set(neighbour, face);
+
+        if (neighbour === goal) {
+          const path = [goal];
+          let current = face;
+          while (current !== -1) {
+            path.push(current);
+            current = parent.get(current);
+          }
+          path.reverse();
+          return path;
+        }
+        queue.push(neighbour);
+      }
+
+      // A pointer jump should remain local. Avoid traversing an entire huge mesh
+      // when the cursor left and re-entered on an unrelated component.
+      if (queue.length > 20000) break;
+    }
+    return [goal];
+  }
+
+  function annotationHitAt(event) {
+    if (!annotationMesh) return null;
+    const rect = element.renderer.domElement.getBoundingClientRect();
+    const pointer = new THREE.Vector2(
+      (event.clientX - rect.left) / rect.width * 2 - 1,
+      -(event.clientY - rect.top) / rect.height * 2 + 1,
+    );
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(pointer, element.camera);
+    const hits = ray.intersectObject(annotationMesh, false);
+    if (!hits.length || hits[0].faceIndex === undefined) return null;
+
+    return {
+      face: hits[0].faceIndex,
+      point: annotationMesh.worldToLocal(hits[0].point.clone()),
+    };
+  }
+
+  function applyBrush(seed, point, erase) {
+    for (const selectedFace of brushFaces(seed, point)) {
+      if (erase) annotationFaces.delete(selectedFace);
+      else annotationFaces.add(selectedFace);
+    }
+  }
+
+  function paintAnnotation(event) {
+    const hit = annotationHitAt(event);
+    if (!hit) {
+      previousPaintFace = null;
+      return;
+    }
+
+    const erase = annotationMode === 'erase' || event.shiftKey;
+    const path = shortestFacePath(previousPaintFace, hit.face);
+
+    // Fill the full connected surface path between pointer events. This removes
+    // holes when a dense mesh receives fewer pointermove events than triangles.
+    for (const face of path) {
+      applyBrush(face, faceCenter(face), erase);
+    }
+
+    // Centre the final brush exactly on the ray hit, not merely on the triangle
+    // centroid, so the visual brush remains stable on large triangles.
+    applyBrush(hit.face, hit.point, erase);
+    previousPaintFace = hit.face;
+    refreshAnnotation();
+  }
+
+  function beginAnnotationStroke(event) {
+    if (
+      workspaceMode !== 'annotate'
+      || annotationMode === 'orbit'
+      || !annotationMesh
+      || event.button !== 0
+    ) return false;
+
+    painting = true;
+    activePointerId = event.pointerId;
+    strokeSnapshot = new Set(annotationFaces);
+    previousPaintFace = null;
+    element.controls.enabled = false;
+    element.renderer.domElement.setPointerCapture(event.pointerId);
+    paintAnnotation(event);
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
+  function endAnnotationStroke(event) {
+    if (!painting || event.pointerId !== activePointerId) return false;
+
+    painting = false;
+    if (strokeSnapshot) annotationHistory.push(strokeSnapshot);
+    strokeSnapshot = null;
+    previousPaintFace = null;
+
+    if (element.renderer.domElement.hasPointerCapture(event.pointerId)) {
+      element.renderer.domElement.releasePointerCapture(event.pointerId);
+    }
+
+    activePointerId = null;
+    element.controls.enabled = true;
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
   }
 
   const api = {
@@ -278,6 +499,13 @@ async function createGraspViewer(id, timeoutMs) {
       workspaceMode = value;
       objectGroup.visible = value === 'preview';
       if (annotationMesh) annotationMesh.visible = value === 'annotate';
+
+      if (value === 'annotate') {
+        element.controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
+        element.controls.enabled = true;
+      } else {
+        Object.assign(element.controls.mouseButtons, defaultMouseButtons);
+      }
       refresh();
     },
 
@@ -286,9 +514,69 @@ async function createGraspViewer(id, timeoutMs) {
       refreshAnnotation();
     },
 
+    async saveAnnotation() {
+      if (!data || !annotationMesh) {
+        throw new Error('No annotation surface is loaded');
+      }
+
+      const response = await fetch(
+        `/grasp-data/${datasetIndex}/annotation`,
+        {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            faces: Array.from(annotationFaces).sort((a, b) => a - b),
+          }),
+        },
+      );
+
+      let payload;
+      try {
+        payload = await response.json();
+      } catch (_error) {
+        throw new Error(`Save failed with HTTP ${response.status}`);
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          payload.detail || `Save failed with HTTP ${response.status}`
+        );
+      }
+      return payload;
+    },
+
     annotationFaces() {
       return Array.from(annotationFaces).sort((a, b) => a - b);
     },
+
+    annotationTool(value) {
+      annotationMode = value;
+      painting = false;
+      activePointerId = null;
+      element.controls.enabled = true;
+    },
+
+    annotationBrush(value) {
+      annotationBrushPercent = Math.max(
+        0.5,
+        Math.min(50, Number(value) || 5),
+      );
+    },
+
+    undoAnnotation() {
+      if (!annotationHistory.length) return annotationFaces.size;
+      annotationFaces = annotationHistory.pop();
+      refreshAnnotation();
+      return annotationFaces.size;
+    },
+
+    clearAnnotation() {
+      annotationHistory.push(new Set(annotationFaces));
+      annotationFaces.clear();
+      refreshAnnotation();
+      return 0;
+    },
+
     appearance(value, showObject, showAxes, showGrid, wireframe, color) {
       opacity = value;
       colorMode = color;
@@ -354,37 +642,79 @@ async function createGraspViewer(id, timeoutMs) {
     },
   };
   let down = {x: 0, y: 0};
-  element.renderer.domElement.addEventListener('pointerdown', e => { down = {x: e.clientX, y: e.clientY}; });
-  element.renderer.domElement.addEventListener('pointerup', event => {
-    if (!data || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
+  const canvas = element.renderer.domElement;
 
-    const rect = element.renderer.domElement.getBoundingClientRect();
+  canvas.addEventListener('contextmenu', event => {
+    if (workspaceMode === 'annotate') event.preventDefault();
+  });
 
-    if (workspaceMode === 'annotate' && annotationMesh) {
-      const pointer = new THREE.Vector2(
-        (event.clientX - rect.left) / rect.width * 2 - 1,
-        -(event.clientY - rect.top) / rect.height * 2 + 1,
-      );
-      const ray = new THREE.Raycaster();
-      ray.setFromCamera(pointer, element.camera);
-      const hits = ray.intersectObject(annotationMesh, false);
+  window.addEventListener('keydown', event => {
+    if (
+      workspaceMode !== 'annotate'
+      || !(event.ctrlKey || event.metaKey)
+      || event.altKey
+      || event.key.toLowerCase() !== 'z'
+    ) return;
 
-      if (hits.length && hits[0].faceIndex !== undefined) {
-        const face = hits[0].faceIndex;
-        if (event.shiftKey) annotationFaces.delete(face);
-        else annotationFaces.add(face);
-        refreshAnnotation();
-      }
-      return;
+    const target = event.target;
+    if (
+      target instanceof HTMLInputElement
+      || target instanceof HTMLTextAreaElement
+      || target instanceof HTMLSelectElement
+      || target?.isContentEditable
+    ) return;
+
+    event.preventDefault();
+    if (annotationHistory.length) {
+      annotationFaces = annotationHistory.pop();
+      refreshAnnotation();
     }
+  });
+
+  canvas.addEventListener('pointerdown', event => {
+    down = {x: event.clientX, y: event.clientY};
+    beginAnnotationStroke(event);
+  }, true);
+
+  canvas.addEventListener('pointermove', event => {
+    if (
+      painting
+      && event.pointerId === activePointerId
+      && (event.buttons & 1)
+    ) {
+      paintAnnotation(event);
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+
+  canvas.addEventListener('pointerup', event => {
+    if (endAnnotationStroke(event)) return;
+    if (
+      !data
+      || workspaceMode === 'annotate'
+      || Math.hypot(
+        event.clientX - down.x,
+        event.clientY - down.y,
+      ) > 4
+    ) return;
 
     if (displayMode !== 'all') return;
-    const pointer = new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1,
-      -(event.clientY - rect.top) / rect.height * 2 + 1);
+    const rect = canvas.getBoundingClientRect();
+    const pointer = new THREE.Vector2(
+      (event.clientX - rect.left) / rect.width * 2 - 1,
+      -(event.clientY - rect.top) / rect.height * 2 + 1,
+    );
     const ray = new THREE.Raycaster();
     ray.setFromCamera(pointer, element.camera);
-    const hits = ray.intersectObjects(groups.map(g => g.all));
-    if (hits.length && hits[0].instanceId !== undefined) element.$emit('grasp_pick', hits[0].instanceId);
-  });
+    const hits = ray.intersectObjects(groups.map(group => group.all));
+    if (hits.length && hits[0].instanceId !== undefined) {
+      element.$emit('grasp_pick', hits[0].instanceId);
+    }
+  }, true);
+
+  canvas.addEventListener('pointercancel', event => {
+    endAnnotationStroke(event);
+  }, true);
   return api;
 }

@@ -10,12 +10,129 @@ from typing import Any
 import numpy as np
 import trimesh
 
-from graspdatagen.assets import open_stage
+from graspdatagen.assets import file_hash, inspect_object, open_stage
 from graspdatagen.config import load_gripper, load_objects, read_mapping
 from graspdatagen.geometry import mesh_in_frame, pose_matrices
 from graspdatagen.grippers import tcp_definition
 from graspdatagen.records import PreparedPair
 from graspdatagen.viewer import closure_transforms
+
+
+def discover_prepared_objects(prepared_root: Path) -> dict[str, Path]:
+    """Return one exact prepared geometry per object, rejecting real ambiguity."""
+    grouped: dict[str, list[tuple[Path, str | None]]] = {}
+    for manifest_path in sorted(prepared_root.glob("*/manifest.json")):
+        geometry = manifest_path.parent / "geometry.npz"
+        if not geometry.is_file():
+            continue
+        manifest = json.loads(manifest_path.read_text())
+        if manifest.get("kind") != "object":
+            continue
+        digest = manifest.get("artifacts", {}).get("geometry.npz")
+        grouped.setdefault(manifest["name"], []).append(
+            (geometry, digest or file_hash(geometry))
+        )
+
+    result: dict[str, Path] = {}
+    for name, entries in grouped.items():
+        hashes = {digest for _, digest in entries}
+        if len(hashes) > 1:
+            raise ValueError(
+                f"{name}: prepared caches have different geometry hashes"
+            )
+        result[name] = entries[0][0].resolve()
+    return dict(sorted(result.items()))
+
+
+def _load_prepared_object(source: Path) -> dict[str, Any]:
+    """Load an annotation-only scene directly from an existing prepared cache."""
+    from pxr import UsdGeom
+
+    directory = source.parent
+    manifest = json.loads((directory / "manifest.json").read_text())
+    if manifest.get("kind") != "object":
+        raise ValueError(f"Not a prepared object cache: {directory}")
+
+    stage = open_stage(directory / "replay.usdc", "")
+    if UsdGeom.GetStageMetersPerUnit(stage) != 1:
+        raise ValueError("Web viewer requires metre-authored USD assets")
+    root = stage.GetDefaultPrim()
+    if not root:
+        raise ValueError("Prepared object USD needs a default prim")
+    meshes = surface_payload(root, root)
+    vertices = np.concatenate(
+        [np.asarray(mesh["vertices"]).reshape(-1, 3) for mesh in meshes]
+    )
+    with np.load(source, allow_pickle=False) as geometry:
+        annotation_vertices = np.asarray(
+            geometry["surface_vertices_m"], dtype=np.float64
+        )
+        annotation_faces = np.asarray(
+            geometry["surface_faces"], dtype=np.int64
+        )
+
+    return {
+        "object": manifest["name"],
+        "robot": "",
+        "source": str(source),
+        "provenance": "Prepared object / annotation only",
+        "candidates": [],
+        "object_meshes": meshes,
+        "annotation_mesh": {
+            "vertices": annotation_vertices.ravel(),
+            "faces": annotation_faces.ravel(),
+        },
+        "parts": [],
+        "bounds": [vertices.min(axis=0).tolist(), vertices.max(axis=0).tolist()],
+    }
+
+
+def _load_raw_object(source: Path, objects: Path) -> dict[str, Any]:
+    """Build an annotation-only scene from source USD without Isaac Sim."""
+    configs = load_objects(objects)
+    matching = [item for item in configs if item.source.resolve() == source.resolve()]
+    if len(matching) != 1:
+        raise ValueError(f"Expected one object configuration for {source}")
+    config = matching[0]
+    stage = open_stage(config.source, config.root_prim)
+    root = stage.GetDefaultPrim()
+    if not root:
+        raise ValueError(f"Object {config.name} needs a default prim")
+
+    inspection = inspect_object(config)
+    surface = trimesh.util.concatenate(
+        [
+            mesh_in_frame(stage.GetPrimAtPath(path), root)
+            for path in inspection["surface_prims"]
+        ]
+    )
+    surface.apply_scale(inspection["meters_per_unit"])
+    surface.merge_vertices()
+    surface.fix_normals(multibody=True)
+
+    vertices = np.asarray(surface.vertices, dtype=np.float64)
+    faces = np.asarray(surface.faces, dtype=np.int64)
+    annotation_mesh = {
+        "vertices": vertices.ravel(),
+        "faces": faces.ravel(),
+    }
+    return {
+        "object": config.name,
+        "robot": "",
+        "source": str(config.source),
+        "provenance": "Source object / CPU annotation surface",
+        "candidates": [],
+        "object_meshes": [
+            {
+                **annotation_mesh,
+                "color": [0.62, 0.66, 0.69],
+                "representation": "visual",
+            }
+        ],
+        "annotation_mesh": annotation_mesh,
+        "parts": [],
+        "bounds": [surface.bounds[0].tolist(), surface.bounds[1].tolist()],
+    }
 
 
 def surface_payload(root: Any, frame: Any) -> list[dict[str, Any]]:
@@ -100,6 +217,13 @@ def load_dataset(
     source: Path, objects: Path, grippers: tuple[Path, ...], overview_faces: int
 ) -> dict[str, Any]:
     from pxr import Usd, UsdGeom, UsdPhysics
+
+    if source.name == "geometry.npz" and source.with_name("manifest.json").is_file():
+        return _load_prepared_object(source)
+
+    configured_sources = {item.source.resolve() for item in load_objects(objects)}
+    if source.resolve() in configured_sources:
+        return _load_raw_object(source, objects)
 
     data = read_mapping(source)
     if data["position_unit"] != "m" or data["pose_layout"] != [
