@@ -6,6 +6,8 @@ import argparse
 import gzip
 import json
 import logging
+import os
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,7 @@ from fastapi import HTTPException, Request, Response
 from nicegui import app, run, ui
 
 from graspdatagen.config import load_objects
-from graspdatagen.web.data import load_dataset
+from graspdatagen.web.data import discover_prepared_objects, load_dataset
 from graspdatagen.web.file_picker import pick_dataset
 from graspdatagen.web.transport import encode_payload
 
@@ -74,6 +76,106 @@ def serve(
             dataset_response, index, True, "gzip" in request.headers.get("Accept-Encoding", "")
         )
 
+    def write_annotation(index: int, face_values: Any) -> dict[str, Any]:
+        """Validate and atomically save one browser annotation."""
+        if not 0 <= index < len(available_sources):
+            raise ValueError("Dataset not found")
+
+        loaded = dataset(available_sources[index])
+        annotation = loaded.get("annotation_mesh")
+        if annotation is None:
+            raise ValueError("This dataset has no annotation surface")
+
+        vertices = np.asarray(
+            annotation["vertices"], dtype=np.float64
+        ).reshape(-1, 3)
+        topology = np.asarray(
+            annotation["faces"], dtype=np.int64
+        ).reshape(-1, 3)
+        faces = np.unique(
+            np.asarray(face_values, dtype=np.int64).reshape(-1)
+        )
+
+        if faces.size and (
+            faces.min() < 0 or faces.max() >= len(topology)
+        ):
+            raise ValueError("Invalid annotated face index")
+
+        grasp_regions.mkdir(parents=True, exist_ok=True)
+        output = grasp_regions / f"{loaded['object']}.npz"
+
+        # Do not rewrite an existing annotation when nothing changed.
+        if output.is_file():
+            with np.load(output, allow_pickle=False) as existing:
+                same = (
+                    np.array_equal(
+                        np.asarray(existing["surface_vertices_m"]),
+                        vertices,
+                    )
+                    and np.array_equal(
+                        np.asarray(existing["surface_faces"], dtype=np.int64),
+                        topology,
+                    )
+                    and np.array_equal(
+                        np.sort(
+                            np.asarray(
+                                existing["allowed_faces"], dtype=np.int64
+                            ).reshape(-1)
+                        ),
+                        faces,
+                    )
+                )
+            if same:
+                return {
+                    "saved": False,
+                    "count": int(len(faces)),
+                    "output": str(output),
+                }
+
+        # Write a complete temporary NPZ, then replace atomically.
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{loaded['object']}.",
+            suffix=".npz",
+            dir=grasp_regions,
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                np.savez_compressed(
+                    stream,
+                    allowed_faces=faces,
+                    surface_vertices_m=vertices,
+                    surface_faces=topology,
+                )
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, output)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+        return {
+            "saved": True,
+            "count": int(len(faces)),
+            "output": str(output),
+        }
+
+    @app.post("/grasp-data/{index}/annotation")
+    async def save_annotation(index: int, request: Request) -> dict[str, Any]:
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict) or not isinstance(
+                payload.get("faces"), list
+            ):
+                raise ValueError("Expected a JSON faces array")
+            return await run.io_bound(
+                write_annotation, index, payload["faces"]
+            )
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        except Exception as error:
+            logging.exception("Cannot save annotation dataset %d", index)
+            raise HTTPException(500, str(error)) from error
+
     @ui.page("/")
     async def index() -> None:
         ui.colors(primary="#167567", secondary="#d18c36", accent="#167567")
@@ -118,7 +220,7 @@ def serve(
             return await javascript(f"window.graspViewer.{method}(...{json.dumps(args)})")
 
         async def select(value: int) -> None:
-            if not state["ready"]:
+            if not state["ready"] or not state["candidates"]:
                 return
             value = max(0, min(int(value), len(state["candidates"]) - 1))
             state["index"] = value
@@ -143,7 +245,9 @@ def serve(
         async def mode_changed() -> None:
             if state["ready"]:
                 await command("mode", mode.value)
-                visible_count.set_text(str(len(state["candidates"]) if mode.value == "all" else 1))
+                visible_count.set_text(
+                    str(len(state["candidates"]) if mode.value == "all" else min(1, len(state["candidates"])))
+                )
 
         async def workspace_changed() -> None:
             if not state["ready"]:
@@ -168,51 +272,51 @@ def serve(
                 dataset_open.set_enabled(True)
                 workspace_mode.set_enabled(True)
 
+        async def annotation_tool_changed() -> None:
+            if state["ready"]:
+                await command("annotationTool", annotation_tool.value)
+
+        async def annotation_brush_changed() -> None:
+            if state["ready"]:
+                await command("annotationBrush", annotation_brush.value)
+
+        async def undo_annotation() -> None:
+            if state["ready"]:
+                await command("undoAnnotation")
+
+        async def clear_annotation() -> None:
+            if state["ready"]:
+                await command("clearAnnotation")
+
         async def save_region() -> None:
             if not state["ready"]:
                 return
 
-            index = int(dataset_select.value)
-            loaded = await run.io_bound(dataset, available_sources[index])
-            annotation = loaded.get("annotation_mesh")
-            if annotation is None:
+            try:
+                result = await command("saveAnnotation")
+            except Exception as error:
                 ui.notify(
-                    "This dataset has no prepared annotation surface",
+                    f"Save failed: {error}",
                     type="negative",
+                    timeout=0,
+                    close_button=True,
                 )
                 return
 
-            faces = np.asarray(
-                await command("annotationFaces"),
-                dtype=np.int64,
-            )
-
-            vertices = np.asarray(
-                annotation["vertices"], dtype=np.float64
-            ).reshape(-1, 3)
-            topology = np.asarray(
-                annotation["faces"], dtype=np.int64
-            ).reshape(-1, 3)
-
-            if faces.size and (
-                faces.min() < 0 or faces.max() >= len(topology)
-            ):
-                ui.notify("Invalid annotated face index", type="negative")
-                return
-
-            grasp_regions.mkdir(parents=True, exist_ok=True)
-            output = grasp_regions / f"{loaded['object']}.npz"
-
-            np.savez_compressed(
-                output,
-                allowed_faces=np.unique(faces),
-                surface_vertices_m=vertices,
-                surface_faces=topology,
-            )
+            if result["saved"]:
+                message = (
+                    f"Saved {result['count']} faces → "
+                    f"{result['output']}"
+                )
+            else:
+                message = (
+                    f"Unchanged: {result['count']} faces → "
+                    f"{result['output']}"
+                )
 
             ui.notify(
-                f"Saved {len(np.unique(faces))} faces → {output}",
-                type="positive",
+                message,
+                type="positive" if result["saved"] else "info",
             )
 
         async def appearance() -> None:
@@ -232,7 +336,7 @@ def serve(
             play.props(f"icon={'pause' if state['playing'] else 'play_arrow'}")
 
         async def tick() -> None:
-            if state["ready"] and state["playing"]:
+            if state["ready"] and state["playing"] and state["candidates"]:
                 await select((state["index"] + 1) % len(state["candidates"]))
 
         async def load() -> None:
@@ -298,12 +402,24 @@ def serve(
                 source_label.set_text(metadata["provenance"])
                 source_label.tooltip(metadata["source"])
                 dimensions.set_text(" x ".join(f"{v * 1000:.1f}" for v in metadata["size"]) + " mm")
-                candidate_input._props["max"] = len(state["candidates"]) - 1
+                candidate_input._props["max"] = max(0, len(state["candidates"]) - 1)
                 candidate_input.update()
                 scrubber._props["max"] = max(1, len(state["candidates"]) - 1)
                 scrubber.update()
                 state["ready"] = True
-                await select(0)
+                if state["candidates"]:
+                    play.set_enabled(True)
+                    candidate_input.set_enabled(True)
+                    scrubber.set_enabled(True)
+                    await select(0)
+                else:
+                    counter.set_text("000 / 000")
+                    visible_count.set_text("0")
+                    previous.set_enabled(False)
+                    following.set_enabled(False)
+                    play.set_enabled(False)
+                    candidate_input.set_enabled(False)
+                    scrubber.set_enabled(False)
                 await mode_changed()
                 await appearance()
                 status.set_text(
@@ -396,6 +512,46 @@ def serve(
                         on_change=workspace_changed,
                     ).props("no-caps unelevated")
 
+                    ui.label("Annotation tool").classes("control-label")
+                    annotation_tool = ui.toggle(
+                        {
+                            "orbit": "Orbit",
+                            "paint": "Paint",
+                            "erase": "Erase",
+                        },
+                        value="paint",
+                        on_change=annotation_tool_changed,
+                    ).props("no-caps unelevated")
+
+                    ui.label("Brush size").classes("control-label")
+                    annotation_brush = ui.slider(
+                        min=0.5,
+                        max=50,
+                        step=0.5,
+                        value=5,
+                        on_change=annotation_brush_changed,
+                    ).props("label suffix=%")
+
+                    with ui.row().classes("w-full"):
+                        (
+                            ui.button(
+                                "Undo",
+                                icon="undo",
+                                on_click=undo_annotation,
+                            )
+                            .props("outline no-caps")
+                            .classes("grow")
+                        )
+                        (
+                            ui.button(
+                                "Clear",
+                                icon="delete_sweep",
+                                on_click=clear_annotation,
+                            )
+                            .props("outline no-caps")
+                            .classes("grow")
+                        )
+
                     (
                         ui.button(
                             "Save region",
@@ -407,7 +563,8 @@ def serve(
                     )
 
                     ui.label(
-                        "Annotate: click = paint · Shift+click = erase"
+                        "Orbit rotates · Paint/Erase drag continuously · "
+                        "Shift temporarily erases"
                     ).classes("muted small")
 
                     ui.separator()
@@ -550,6 +707,11 @@ def main() -> None:
         help="Compact YAML files; omitted: discover outputs and configured objects",
     )
     parser.add_argument(
+        "--annotation-only",
+        action="store_true",
+        help="List configured objects for annotation without discovering grasp datasets",
+    )
+    parser.add_argument(
         "--objects",
         type=Path,
         default=Path("configs/objects/production.yaml"),
@@ -578,11 +740,17 @@ def main() -> None:
         default=Path("annotations/grasp_regions"),
         help="Directory containing grasp-region NPZ annotations",
     )
+    parser.add_argument(
+        "--prepared-root",
+        type=Path,
+        default=Path("outputs/prepared/objects"),
+        help="Existing prepared object caches used for annotation-only entries",
+    )
     args = parser.parse_args()
     if args.overview_faces < 100:
         parser.error("--overview-faces must be at least 100")
-    sources = args.grasps
-    if not sources:
+    sources = [] if args.annotation_only else args.grasps
+    if not sources and not args.annotation_only:
         sources = sorted(Path("outputs").rglob("grasps.yaml"))
         sources += [
             path
@@ -590,9 +758,40 @@ def main() -> None:
             for path in sorted(o.source.parent.glob("grasps*.yaml"))
             if path.is_file()
         ]
+    if any(not p.is_file() for p in sources):
+        parser.error("A requested grasp file does not exist")
     sources = list(dict.fromkeys(p.resolve() for p in sources))
-    if not sources or any(not p.is_file() for p in sources):
-        parser.error("No grasp files found; provide existing compact YAML files with --grasps")
+
+    represented: set[str] = set()
+    for source in sources:
+        manifest_path = source.with_name("manifest.json")
+        if not manifest_path.is_file():
+            continue
+        manifest = json.loads(manifest_path.read_text())
+        object_cache = Path(manifest.get("object_cache", ""))
+        object_manifest = object_cache / "manifest.json"
+        if object_manifest.is_file():
+            represented.add(json.loads(object_manifest.read_text())["name"])
+
+    try:
+        prepared = discover_prepared_objects(args.prepared_root)
+    except ValueError as error:
+        parser.error(str(error))
+    configured_items = load_objects(args.objects)
+    configured = {item.name for item in configured_items}
+    sources.extend(
+        path
+        for name, path in prepared.items()
+        if name in configured and name not in represented
+    )
+    covered = represented | (set(prepared) & configured)
+    sources.extend(
+        item.source.resolve()
+        for item in configured_items
+        if item.name not in covered
+    )
+    if not sources:
+        parser.error("No grasp datasets or configured objects found")
     serve(
         tuple(sources),
         args.objects,
