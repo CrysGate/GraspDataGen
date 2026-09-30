@@ -75,11 +75,12 @@ def posture_mask(poses: FloatArray, pair: PreparedPair, config: PostureConfig) -
     rotation = poses[..., :3, :3]
     approach = rotation @ pair.arrays["approach_axis_tcp"]
     up_tcp = pair.arrays["T_B_tcp"][:3, :3].T @ np.asarray(
-        config.wrist_up_axes_base[pair.gripper_manifest["name"]]
+        pair.gripper_manifest["config"]["wrist_up_axis_base"]
     )
     wrist = rotation @ up_tcp
-    return (approach @ config.object_up_axis <= config.max_approach_up_dot) & (
-        wrist @ config.object_up_axis >= config.min_wrist_up_dot
+    up = np.asarray(pair.object_manifest["config"]["up_axis"])
+    return (approach @ up <= config.max_approach_up_dot) & (
+        wrist @ up >= config.min_wrist_up_dot
     )
 
 
@@ -199,7 +200,8 @@ class Sampler:
         self.source: SurfaceQueries = SurfaceQueries(self.surface, device)
         self.proxy: SurfaceQueries = SurfaceQueries(trimesh.util.concatenate(hulls), device)
         self.radius: float = float(np.linalg.norm(self.surface.extents))
-        self.bottom: float = float((self.surface.vertices @ posture.object_up_axis).min())
+        self.object_up_axis: FloatArray = np.asarray(pair.object_manifest["config"]["up_axis"])
+        self.bottom: float = float((self.surface.vertices @ self.object_up_axis).min())
         self.samples: list[FloatArray] = []
         for joints in pair.arrays["joint_positions_m"]:
             mesh = trimesh.util.concatenate(gripper_meshes(pair, joints))
@@ -455,7 +457,7 @@ class Sampler:
                             + retreat[pending, None] * retreat_axis[pending]
                             + displacement[pending] * fraction
                         )[:, None, :]
-                        bottom = (world @ self.posture.object_up_axis).min(axis=1)
+                        bottom = (world @ self.object_up_axis).min(axis=1)
                         distance = self.proxy.distances(world.reshape(-1, 3), self.radius + 1)
                         margin = np.minimum(
                             margin,
@@ -520,7 +522,7 @@ class Sampler:
             blend = np.clip((command - commands[lower]) / (commands[upper] - commands[lower]), 0, 1)
             sample = (1 - blend) * self.samples[lower] + blend * self.samples[upper]
             points = transform_points(sample, bases[index])
-            valid[index] &= (points @ self.posture.object_up_axis).min() >= (
+            valid[index] &= (points @ self.object_up_axis).min() >= (
                 self.bottom + self.posture.bottom_clearance_m
             )
         return np.asarray(valid.all(axis=1))

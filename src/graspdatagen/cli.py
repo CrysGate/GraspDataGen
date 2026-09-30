@@ -19,7 +19,7 @@ from typing import Any
 import yaml
 
 from graspdatagen.assets import check_cache, file_hash, inspect_object, write_json
-from graspdatagen.config import digest, load_gripper, load_objects, load_run
+from graspdatagen.config import digest, load_gripper, load_objects, load_run, read_mapping
 from graspdatagen.runtime import PhysxRuntime, RuntimeConfig
 from graspdatagen.storage import acknowledge_checkpoints, durable_json, export_grasps_yaml
 
@@ -62,23 +62,23 @@ def worker(args: argparse.Namespace) -> None:
         "complete": False,
         "objects": [],
     }
-    runtime = PhysxRuntime(RuntimeConfig(args.device, 240))
+    if args.command == "inspect":
+        report["objects"] = [inspect_object(config) for config in objects]
+        report["checks_passed"] = True
+        write_json(args.output, report)
+        return
+    gripper = load_gripper(args.gripper)
+    runtime = PhysxRuntime(RuntimeConfig(args.device, gripper.calibration.steps_per_second))
     try:
         from graspdatagen.assets import prepare_object
         from graspdatagen.grippers import prepare_gripper
 
-        if args.command == "inspect":
-            report["objects"] = [inspect_object(config) for config in objects]
-        else:
-            for config in objects:
-                report["objects"].append(str(prepare_object(runtime, config, args.cache)))
-                write_json(args.output, report)
-            gripper = load_gripper(args.gripper)
-            if gripper.calibration.steps_per_second != runtime.config.steps_per_second:
-                raise ValueError("Calibration step rate must match the runtime")
-            prepared = prepare_gripper(runtime, gripper, args.cache)
-            report["gripper"] = str(prepared)
-            report["cache_checks"] = [check_cache(Path(p))["complete"] for p in report["objects"]]
+        for config in objects:
+            report["objects"].append(str(prepare_object(runtime, config, args.cache)))
+            write_json(args.output, report)
+        prepared = prepare_gripper(runtime, gripper, args.cache)
+        report["gripper"] = str(prepared)
+        report["cache_checks"] = [check_cache(Path(p))["complete"] for p in report["objects"]]
         report["checks_passed"] = True
         write_json(args.output, report)
     except Exception as error:
@@ -180,7 +180,7 @@ def run_parallel_generate(config_path: Path, devices: tuple[int, ...], resume: b
             shard_grippers = config.grippers[position :: len(devices)]
             shard_output = config.output.with_name(f"{config.output.name}-gpu{device}")
             shard_path = launch / f"gpu{device}.yaml"
-            snapshot = dict(config.snapshot)
+            snapshot = read_mapping(config_path)
             snapshot["device"] = device
             snapshot["output"] = str(shard_output)
             snapshot["grippers"] = [str(path) for path in shard_grippers]
@@ -358,8 +358,10 @@ def main() -> None:
             lock_fds = (descriptor,)
             if existed and not args.resume:
                 raise SystemExit("Output exists; use --resume with the identical configuration")
-            inputs = [config.manifest, *config.grippers]
-            inputs.extend(load_gripper(path).robot_config for path in config.grippers)
+            inputs = [config.manifest, config.parameters, *config.grippers]
+            for path in config.grippers:
+                gripper = load_gripper(path)
+                inputs.extend((gripper.robot_config, gripper.calibration_config))
             identity = {
                 "config": config.snapshot,
                 "inputs": {str(path): file_hash(path) for path in inputs},
@@ -436,10 +438,14 @@ def main() -> None:
     report["worker_log"] = str(log)
     report["physics_errors"] = physics_errors(log.read_text(errors="replace"))
     report["rendering_errors"] = rendering_errors(log.read_text(errors="replace"))
-    pids = subprocess.check_output(
-        ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"], text=True
-    ).split()
-    report["worker_gpu_released"] = str(report.get("worker_pid")) not in pids
+    # Inspect never creates a GPU runtime, so it needs no NVIDIA process query.
+    report["worker_gpu_released"] = True
+    if args.command != "inspect":
+        pids = subprocess.check_output(
+            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"],
+            text=True,
+        ).split()
+        report["worker_gpu_released"] = str(process.pid) not in pids
     report["complete"] = (
         process.returncode == 0
         and report.get("checks_passed") is True

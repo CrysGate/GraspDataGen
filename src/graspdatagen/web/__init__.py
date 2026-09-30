@@ -704,7 +704,7 @@ def main() -> None:
         type=Path,
         nargs="*",
         default=[],
-        help="Compact YAML files; omitted: discover outputs and configured objects",
+        help="Compact YAML files; omitted: discover exports beside configured objects",
     )
     parser.add_argument(
         "--annotation-only",
@@ -714,7 +714,7 @@ def main() -> None:
     parser.add_argument(
         "--objects",
         type=Path,
-        default=Path("configs/objects/production.yaml"),
+        default=Path("configs/objects/our_assets.yaml"),
         help="Object configuration for standalone YAML without a manifest",
     )
     parser.add_argument(
@@ -751,8 +751,7 @@ def main() -> None:
         parser.error("--overview-faces must be at least 100")
     sources = [] if args.annotation_only else args.grasps
     if not sources and not args.annotation_only:
-        sources = sorted(Path("outputs").rglob("grasps.yaml"))
-        sources += [
+        sources = [
             path
             for o in load_objects(args.objects)
             for path in sorted(o.source.parent.glob("grasps*.yaml"))

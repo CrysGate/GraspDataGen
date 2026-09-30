@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import tempfile
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -67,9 +66,6 @@ def tcp_definition(config: GripperConfig) -> dict[str, Any]:
         )
         prim = prim.GetParent()
     chain.reverse()
-    ee = stage.GetPrimAtPath(
-        config.root_prim + "/" + config.robot_snapshot["kinematics"]["ee_body"]
-    )
     return {
         "configuration": tcp,
         "configuration_sha256": digest(tcp),
@@ -78,7 +74,6 @@ def tcp_definition(config: GripperConfig) -> dict[str, Any]:
         "T_B_P": T_B_P.tolist(),
         "T_P_tcp": T_P_tcp.tolist(),
         "T_B_tcp": T_B_tcp.tolist(),
-        "T_ee_B": relative_transform(base, ee).tolist(),
         "approach_axis_tcp": (T_B_tcp[:3, :3].T @ config.approach_axis_base).tolist(),
         "opening_axis_tcp": (T_B_tcp[:3, :3].T @ config.opening_axis_base).tolist(),
     }
@@ -183,15 +178,6 @@ def extract_gripper(
     derived_base = stage.GetPrimAtPath("/Gripper/" + config.base_body)
     if not np.allclose(relative_transform(parent, derived_base), tcp["T_B_P"], atol=1e-9):
         raise RuntimeError("Extracted TCP parent chain changed")
-    urdf = Path(config.robot_snapshot["urdf_path"])
-    urdf_joints = ET.parse(urdf).getroot().findall("joint")
-    limits = {}
-    for urdf_joint in urdf_joints:
-        if urdf_joint.attrib["name"] in config.robot_snapshot["gripper"]["joint_names"]:
-            limit = urdf_joint.find("limit")
-            if limit is None:
-                raise ValueError("Selected URDF joint has no limits")
-            limits[urdf_joint.attrib["name"]] = limit.attrib
     return {
         "prim_mapping": mapping,
         "base_body": config.base_body,
@@ -206,8 +192,6 @@ def extract_gripper(
         "retained_bodies": list(config.retained_bodies),
         "retained_joints": list(config.retained_joints),
         "tcp": tcp,
-        "urdf_joint_limits": limits,
-        "urdf_sha256": file_hash(urdf),
         "display": "source visual surfaces and materials; native collision prims retained",
     }
 
@@ -316,7 +300,6 @@ def calibrate_definition(
         "T_B_fingers": T_B_fingers[sorting],
         "contact_points_B_m": contact_points[sorting],
         "T_B_tcp": np.asarray(extraction["tcp"]["T_B_tcp"]),
-        "T_ee_B": np.asarray(extraction["tcp"]["T_ee_B"]),
         "joint_limits_m": np.asarray(measured["limits_m"]),
         "approach_axis_tcp": np.asarray(extraction["tcp"]["approach_axis_tcp"]),
         "opening_axis_tcp": np.asarray(extraction["tcp"]["opening_axis_tcp"]),
@@ -377,8 +360,6 @@ def calibrate_definition(
 def prepare_gripper(runtime: PhysxRuntime, config: GripperConfig, cache_root: Path) -> Path:
     fingerprint = source_fingerprint(config.source)
     fingerprint["files"][str(config.robot_config)] = file_hash(config.robot_config)
-    urdf = Path(config.robot_snapshot["urdf_path"])
-    fingerprint["files"][str(urdf)] = file_hash(urdf)
     key = cache_identity(fingerprint, config.snapshot)
     destination = cache_root / "grippers" / key
     if destination.exists():

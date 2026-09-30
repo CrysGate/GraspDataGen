@@ -1,12 +1,15 @@
 # Task inputs, resource budgets, and explicit differences from the shared parameters.
 parameters: configs/parameters.yaml
-grippers: [configs/grippers/piper.yaml, configs/grippers/arx_x5.yaml]
+grippers: [configs/grippers/piper.yaml]
 manifest: configs/objects/our_assets.yaml
 cache: outputs/prepared
-output: outputs/our-assets-production
-device: 0
-environments: 2048
+output: outputs/gui-test
+device: 1
+environments: 4
 seed: 20260908
 target_successes: 1024
-candidate_budget: 204800
-time_budget_s: 1800
+candidate_budget: 20480
+time_budget_s: 3000
+objects: [shampoo_000]
+sampling:
+  rolls_per_contact: 16

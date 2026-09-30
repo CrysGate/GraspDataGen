@@ -1,196 +1,206 @@
+# Authoritative physical inputs; up_axis is expressed in each original object root frame.
 objects:
-- name: book_000
-  source: Data/our_Assets/book/000/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/book_000.json
-  physics: &usd_mass_050
-    mass_kg: 0.5
-    static_friction: 1.0
-    dynamic_friction: 1.0
-    restitution: 0.0
-    source: USD MassAPI and PhysicsMaterialAPI; generated metadata mirrors authored mass and friction; zero restitution is the USD fallback.
-- name: book_001
-  source: Data/our_Assets/book/001/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/book_001.json
-  physics: *usd_mass_050
-- name: book_002
-  source: Data/our_Assets/book/002/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/book_002.json
-  physics: *usd_mass_050
-- name: book_003
-  source: Data/our_Assets/book/003/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/book_003.json
-  physics: *usd_mass_050
-- name: book_004
-  source: Data/our_Assets/book/004/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/book_004.json
-  physics: *usd_mass_050
-- name: book_005
-  source: Data/our_Assets/book/005/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/book_005.json
-  physics: *usd_mass_050
-- name: bucket_000
-  source: Data/our_Assets/bucket/000/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/bucket_000.json
-  physics: &usd_mass_020
-    mass_kg: 0.2
-    static_friction: 1.0
-    dynamic_friction: 1.0
-    restitution: 0.0
-    source: USD MassAPI and PhysicsMaterialAPI; generated metadata mirrors authored mass and friction; zero restitution is the USD fallback.
-- name: bucket_001
-  source: Data/our_Assets/bucket/001/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/bucket_001.json
-  physics: *usd_mass_020
-- name: can_000
-  source: Data/our_Assets/can/000/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/can_000.json
-  physics: &usd_mass_0198
-    mass_kg: 0.198
-    static_friction: 1.0
-    dynamic_friction: 1.0
-    restitution: 0.0
-    source: USD MassAPI and PhysicsMaterialAPI; generated metadata mirrors authored mass and friction; zero restitution is the USD fallback.
 - name: bubble_tea_cup_300g
-  source: Data/our_Assets/bubble_tea_cup/300g/Aligned.usd
+  source: Data/Assets/Object/Rigid/bubble_tea_cup/300g/Aligned.usd
   root_prim: /root
-  metadata: Data/our_Assets/bubble_tea_cup/300g/metadata.json
-  physics: &metadata_mass_030_friction_080
+  physics:
     mass_kg: 0.3
     static_friction: 0.8
     dynamic_friction: 0.8
     restitution: 0.0
-    source: Existing metadata.json physics; friction initializes both coefficients; zero restitution is the USD fallback.
+    source: Mass from source metadata; configured static/dynamic friction 0.8 overrides metadata friction
+      1.0; zero restitution.
+  up_axis: [0.0, 0.0, 1.0]
 - name: bubble_tea_cup_500g
-  source: Data/our_Assets/bubble_tea_cup/500g/Aligned.usd
+  source: Data/Assets/Object/Rigid/bubble_tea_cup/500g/Aligned.usd
   root_prim: /root
-  metadata: Data/our_Assets/bubble_tea_cup/500g/metadata.json
-  physics: &metadata_mass_050_friction_080
+  physics:
     mass_kg: 0.5
     static_friction: 0.8
     dynamic_friction: 0.8
     restitution: 0.0
-    source: Existing metadata.json physics; friction initializes both coefficients; zero restitution is the USD fallback.
+    source: Mass from source metadata; configured static/dynamic friction 0.8 overrides metadata friction
+      1.0; zero restitution.
+  up_axis: [0.0, 0.0, 1.0]
 - name: bubble_tea_cup_800g
-  source: Data/our_Assets/bubble_tea_cup/800g/Aligned.usd
+  source: Data/Assets/Object/Rigid/bubble_tea_cup/800g/Aligned.usd
   root_prim: /root
-  metadata: Data/our_Assets/bubble_tea_cup/800g/metadata.json
-  physics: &metadata_mass_080_friction_080
+  physics:
     mass_kg: 0.8
     static_friction: 0.8
     dynamic_friction: 0.8
     restitution: 0.0
-    source: Existing metadata.json physics; friction initializes both coefficients; zero restitution is the USD fallback.
+    source: Mass from source metadata; configured static/dynamic friction 0.8 overrides metadata friction
+      1.0; zero restitution.
+  up_axis: [0.0, 0.0, 1.0]
 - name: can_001
   source: Data/our_Assets/can/001/Aligned.usd
   root_prim: /root
-  metadata: configs/objects/our_assets_metadata/can_001.json
-  physics: &usd_mass_034
+  physics:
     mass_kg: 0.34
     static_friction: 1.0
     dynamic_friction: 1.0
     restitution: 0.0
-    source: USD MassAPI and PhysicsMaterialAPI; generated metadata mirrors authored mass and friction; zero restitution is the USD fallback.
-- name: coca_000
-  source: Data/our_Assets/coca/000/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/coca_000.json
-  physics: &usd_mass_030
-    mass_kg: 0.3
-    static_friction: 1.0
-    dynamic_friction: 1.0
-    restitution: 0.0
-    source: USD MassAPI and PhysicsMaterialAPI; generated metadata mirrors authored mass and friction; zero restitution is the USD fallback.
-- name: coca_001
-  source: Data/our_Assets/coca/001/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/coca_001.json
-  physics: &usd_mass_055
-    mass_kg: 0.55
-    static_friction: 1.0
-    dynamic_friction: 1.0
-    restitution: 0.0
-    source: USD MassAPI and PhysicsMaterialAPI; generated metadata mirrors authored mass and friction; zero restitution is the USD fallback.
+    source: USD MassAPI and PhysicsMaterialAPI; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
 - name: gear_000
   source: Data/our_Assets/gear/000/Aligned.usd
   root_prim: /root
-  metadata: configs/objects/our_assets_metadata/gear_000.json
-  physics: &usd_mass_0002
+  physics: &id001
     mass_kg: 0.002
     static_friction: 1.0
     dynamic_friction: 1.0
     restitution: 0.0
-    source: USD MassAPI and PhysicsMaterialAPI; generated metadata mirrors authored mass and friction; zero restitution is the USD fallback.
+    source: USD MassAPI and PhysicsMaterialAPI; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
 - name: gear_001
   source: Data/our_Assets/gear/001/Aligned.usd
   root_prim: /root
-  metadata: configs/objects/our_assets_metadata/gear_001.json
-  physics: *usd_mass_0002
+  physics: *id001
+  up_axis: [0.0, 0.0, 1.0]
 - name: perfume_000
   source: Data/our_Assets/perfume/000/Aligned.usd
   root_prim: /root
-  metadata: configs/objects/our_assets_metadata/perfume_000.json
-  physics: &usd_mass_006
+  physics:
     mass_kg: 0.06
     static_friction: 1.0
     dynamic_friction: 1.0
     restitution: 0.0
-    source: USD MassAPI and PhysicsMaterialAPI; generated metadata mirrors authored mass and friction; zero restitution is the USD fallback.
-- name: pipe_000
-  source: Data/our_Assets/pipe/000/Aligned.usd
-  root_prim: /root
-  metadata: configs/objects/our_assets_metadata/pipe_000.json
-  physics: &usd_mass_010
-    mass_kg: 0.1
-    static_friction: 1.0
-    dynamic_friction: 1.0
-    restitution: 0.0
-    source: USD MassAPI and PhysicsMaterialAPI; generated metadata mirrors authored mass and friction; zero restitution is the USD fallback.
+    source: USD MassAPI and PhysicsMaterialAPI; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
 - name: shampoo_000
   source: Data/our_Assets/shampoo/000/Aligned.usd
   root_prim: /root
-  metadata: configs/objects/our_assets_metadata/shampoo_000.json
-  physics: &usd_mass_100
+  physics:
+    mass_kg: 0.5
+    static_friction: 1.0
+    dynamic_friction: 1.0
+    restitution: 0.0
+    source: Override USD MassAPI mass 1.0 kg with configured mass 0.5 kg; PhysicsMaterialAPI provides
+      friction; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
+- name: shampoo_001
+  source: Data/our_Assets/shampoo/001/Aligned.usd
+  root_prim: /root
+  physics:
     mass_kg: 1.0
     static_friction: 1.0
     dynamic_friction: 1.0
     restitution: 0.0
-    source: USD MassAPI and PhysicsMaterialAPI; generated metadata mirrors authored mass and friction; zero restitution is the USD fallback.
-- name: shampoo_001
-  source: Data/our_Assets/shampoo/001/Aligned.usd
+    source: USD MassAPI and PhysicsMaterialAPI; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
+- name: pipe_000
+  source: Data/our_Assets/pipe/000/Aligned.usd
   root_prim: /root
-  metadata: configs/objects/our_assets_metadata/shampoo_001.json
-  physics: *usd_mass_100
+  physics: &id002
+    mass_kg: 0.1
+    static_friction: 1.0
+    dynamic_friction: 1.0
+    restitution: 0.0
+    source: USD MassAPI and PhysicsMaterialAPI; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
 - name: thermos_cup_000
   source: Data/our_Assets/thermos_cup/000/Aligned.usd
   root_prim: /root
-  metadata: configs/objects/our_assets_metadata/thermos_cup_000.json
-  physics: *usd_mass_010
+  physics: *id002
+  up_axis: [0.0, 0.0, 1.0]
 - name: thermos_cup_001
   source: Data/our_Assets/thermos_cup/001/Aligned.usd
   root_prim: /root
-  metadata: configs/objects/our_assets_metadata/thermos_cup_001.json
-  physics: *usd_mass_010
+  physics: *id002
+  up_axis: [0.0, 0.0, 1.0]
 - name: thermos_cup_002
   source: Data/our_Assets/thermos_cup/002/Aligned.usd
   root_prim: /root
-  metadata: configs/objects/our_assets_metadata/thermos_cup_002.json
-  physics: *usd_mass_010
+  physics: *id002
+  up_axis: [0.0, 0.0, 1.0]
 - name: toothpaste_000
   source: Data/our_Assets/toothpaste/000/Aligned.usd
   root_prim: /root
-  metadata: configs/objects/our_assets_metadata/toothpaste_000.json
-  physics: &usd_mass_008
+  physics:
     mass_kg: 0.08
     static_friction: 1.0
     dynamic_friction: 1.0
     restitution: 0.0
-    source: USD MassAPI and PhysicsMaterialAPI; generated metadata mirrors authored mass and friction; zero restitution is the USD fallback.
+    source: USD MassAPI and PhysicsMaterialAPI; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
+- name: book_000
+  source: Data/our_Assets/book/000/Aligned.usd
+  root_prim: /root
+  physics: &id003
+    mass_kg: 0.5
+    static_friction: 1.0
+    dynamic_friction: 1.0
+    restitution: 0.0
+    source: USD MassAPI and PhysicsMaterialAPI; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
+- name: book_001
+  source: Data/our_Assets/book/001/Aligned.usd
+  root_prim: /root
+  physics: *id003
+  up_axis: [0.0, 0.0, 1.0]
+- name: book_002
+  source: Data/our_Assets/book/002/Aligned.usd
+  root_prim: /root
+  physics: *id003
+  up_axis: [0.0, 0.0, 1.0]
+- name: book_003
+  source: Data/our_Assets/book/003/Aligned.usd
+  root_prim: /root
+  physics: *id003
+  up_axis: [0.0, 0.0, 1.0]
+- name: book_004
+  source: Data/our_Assets/book/004/Aligned.usd
+  root_prim: /root
+  physics: *id003
+  up_axis: [0.0, 0.0, 1.0]
+- name: book_005
+  source: Data/our_Assets/book/005/Aligned.usd
+  root_prim: /root
+  physics: *id003
+  up_axis: [0.0, 0.0, 1.0]
+- name: bucket_000
+  source: Data/our_Assets/bucket/000/Aligned.usd
+  root_prim: /root
+  physics: &id004
+    mass_kg: 0.2
+    static_friction: 1.0
+    dynamic_friction: 1.0
+    restitution: 0.0
+    source: USD MassAPI and PhysicsMaterialAPI; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
+- name: bucket_001
+  source: Data/our_Assets/bucket/001/Aligned.usd
+  root_prim: /root
+  physics: *id004
+  up_axis: [0.0, 0.0, 1.0]
+- name: can_000
+  source: Data/our_Assets/can/000/Aligned.usd
+  root_prim: /root
+  physics:
+    mass_kg: 0.198
+    static_friction: 1.0
+    dynamic_friction: 1.0
+    restitution: 0.0
+    source: USD MassAPI and PhysicsMaterialAPI; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
+- name: coca_000
+  source: Data/our_Assets/coca/000/Aligned.usd
+  root_prim: /root
+  physics:
+    mass_kg: 0.3
+    static_friction: 1.0
+    dynamic_friction: 1.0
+    restitution: 0.0
+    source: USD MassAPI and PhysicsMaterialAPI; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
+- name: coca_001
+  source: Data/our_Assets/coca/001/Aligned.usd
+  root_prim: /root
+  physics:
+    mass_kg: 0.55
+    static_friction: 1.0
+    dynamic_friction: 1.0
+    restitution: 0.0
+    source: USD MassAPI and PhysicsMaterialAPI; zero restitution is the USD fallback.
+  up_axis: [0.0, 0.0, 1.0]
