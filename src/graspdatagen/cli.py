@@ -116,7 +116,18 @@ def data_worker(args: argparse.Namespace) -> None:
         elif args.command == "replay":
             from graspdatagen.replay import replay
 
-            report.update(replay(runtime, args.run, args.output, args.grasp_id, args.environments))
+            override = load_run(args.config) if args.config else None
+            report.update(
+                replay(
+                    runtime,
+                    args.run,
+                    args.output,
+                    args.grasp_id,
+                    args.environments,
+                    override.validation if override else None,
+                    override.seed if override else None,
+                )
+            )
         else:
             from graspdatagen.audit import audit
 
@@ -288,6 +299,11 @@ def main() -> None:
     )
     replay.add_argument(
         "--environments", type=int, default=1, help="Default 1 for independent serial replay"
+    )
+    replay.add_argument(
+        "--config",
+        type=Path,
+        help="Optional run config whose validation profile replaces the saved protocol",
     )
     replay.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     audit = commands.add_parser("audit", help="Run real validator counterexamples and sensitivity")

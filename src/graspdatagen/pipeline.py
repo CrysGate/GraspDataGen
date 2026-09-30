@@ -13,13 +13,14 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from graspdatagen.assets import file_hash, prepare_object, source_fingerprint
-from graspdatagen.config import RunConfig, digest, load_gripper
+from graspdatagen.config import RunConfig, digest, load_gripper, load_objects
 from graspdatagen.geometry import pose_matrices
 from graspdatagen.grippers import prepare_gripper
 from graspdatagen.records import FAILURES, METRICS, STAGES, PreparedPair
 from graspdatagen.runtime import GraspScene, PhysxRuntime, RuntimeConfig
 from graspdatagen.sampling import Sampler, distinct_indices
 from graspdatagen.storage import (
+    FORMAT,
     commit_checkpoint,
     durable_json,
     empty_result_arrays,
@@ -35,15 +36,20 @@ def generate(runtime: PhysxRuntime, config: RunConfig) -> list[dict[str, Any]]:
     prepared_objects: dict[str, Path] = {}
     invalid_objects: dict[str, dict[str, str]] = {}
     preparation_seconds: dict[str, float] = {}
-    objects = config.objects
+    objects = load_objects(config.manifest)
     sources = [item.source for item in objects]
     sources.extend(load_gripper(path).source for path in config.grippers)
-    fingerprints: dict[str, Any] = {"assets": {}}
+    fingerprints: dict[str, Any] = {"assets": {}, "metadata": {}}
     for path in sources:
         try:
             fingerprints["assets"][str(path)] = source_fingerprint(path)
         except (ValueError, FileNotFoundError) as error:
             fingerprints["assets"][str(path)] = {"error": str(error)}
+    for item in objects:
+        try:
+            fingerprints["metadata"][str(item.metadata)] = file_hash(item.metadata)
+        except FileNotFoundError as error:
+            fingerprints["metadata"][str(item.metadata)] = {"error": str(error)}
     input_path = config.output / "inputs.json"
     if input_path.exists():
         if json.loads(input_path.read_text()) != fingerprints:
@@ -74,6 +80,8 @@ def generate(runtime: PhysxRuntime, config: RunConfig) -> list[dict[str, Any]]:
         )
     for gripper_path in config.grippers:
         gripper = load_gripper(gripper_path)
+        if gripper.name not in config.posture.wrist_up_axes_base:
+            raise ValueError(f"Missing wrist mounting-side up axis: {gripper.name}")
         runtime.config = RuntimeConfig(config.device, gripper.calibration.steps_per_second)
         try:
             prepared = prepare_gripper(runtime, gripper, config.cache)
@@ -135,7 +143,7 @@ def generate_pair(
     manifest_path = directory / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
-        if manifest["run_id"] != run_id:
+        if manifest["format"] != FORMAT or manifest["run_id"] != run_id:
             raise ValueError(f"Resume configuration, implementation or asset mismatch: {directory}")
         arrays = read_shards(directory, manifest)
         if manifest["status"] != "running":
@@ -147,6 +155,7 @@ def generate_pair(
         successful = np.empty((0, 4, 4))
         joints = np.empty((0, len(pair.definition["joint_names"])))
         manifest = {
+            "format": FORMAT,
             "run_id": run_id,
             "status": "running",
             "stop_reason": "",
@@ -169,9 +178,7 @@ def generate_pair(
                     "upright dynamic object with seeded yaw; gravity off reset/approach/close"
                 ),
                 "pickup_posture": asdict(config.posture),
-                "holding_motion": (
-                    "approach-axis +/- rotation followed by horizontal out-and-back travel"
-                ),
+                "inversion": "post-pickup holding validation rotates pi about world X",
             },
             "stage_names": STAGES,
             "metric_names": METRICS,
@@ -189,21 +196,15 @@ def generate_pair(
             "elapsed_s": 0.0,
             "resume_count": 0,
             "sampling_state": {"round": 0, "cursor": 0},
-            "sampling_shards": [],
-            "candidate_duplicates": 0,
-            "coverage_deferrals": 0,
             "geometric_rejections": 0,
             "posture_rejections": 0,
             "surface_candidates_consumed": 0,
         }
         commit_checkpoint(directory, manifest)
-    referenced = {
-        shard["path"] for shard in manifest["shards"] + manifest["sampling_shards"]
-    }
-    for pattern in ("grasps-*", "sampling-*"):
-        for orphan in directory.glob(pattern):
-            if orphan.name not in referenced:
-                orphan.unlink()
+    referenced = {shard["path"] for shard in manifest["shards"]}
+    for orphan in directory.glob("grasps-*"):
+        if orphan.name not in referenced:
+            orphan.unlink()
     elapsed = manifest["elapsed_s"]
     deadline = started + max(0, config.time_budget_s - elapsed)
     state = manifest["sampling_state"]
@@ -217,14 +218,6 @@ def generate_pair(
         state["round"],
         state["cursor"],
     )
-    for shard in manifest["sampling_shards"]:
-        path = directory / shard["path"]
-        if file_hash(path) != shard["sha256"]:
-            raise ValueError(f"Corrupt sampling history: {path}")
-        with np.load(path, allow_pickle=False) as history:
-            sampler.restore({key: history[key] for key in history.files})
-    if len(sampler.seen) != manifest["attempted"]:
-        raise ValueError("Sampling history disagrees with attempted candidate count")
     scene = GraspScene(runtime, pair, config.environments, config.validation)
     failures: Counter[str] = Counter(manifest["failures"])
     active = pair.definition["calibration"]["active_index"]
@@ -236,23 +229,28 @@ def generate_pair(
     prior_consumed = manifest["surface_candidates_consumed"]
     prior_rejected = manifest["geometric_rejections"]
     prior_posture = manifest["posture_rejections"]
-    prior_duplicates = manifest["candidate_duplicates"]
-    prior_deferrals = manifest["coverage_deferrals"]
+
+    profile_totals = Counter()
+    profile_round = 0
+
     while (
         len(successful) < config.target_successes
         and manifest["attempted"] < config.candidate_budget
         and time.monotonic() < deadline
     ):
+        profile_round += 1
+        round_started = time.perf_counter()
+
+        t = time.perf_counter()
         batch = sampler.take(
             min(config.environments, config.candidate_budget - manifest["attempted"]), deadline
         )
+        t_sampling = time.perf_counter() - t
         manifest.update(
             sampling_state={"round": sampler.round_index, "cursor": sampler.cursor},
             geometric_rejections=prior_rejected + sampler.rejected,
             posture_rejections=prior_posture + sampler.posture_rejected,
             surface_candidates_consumed=prior_consumed + sampler.consumed,
-            candidate_duplicates=prior_duplicates + sampler.candidate_duplicates,
-            coverage_deferrals=prior_deferrals + sampler.coverage_deferrals,
         )
         if not len(batch):
             manifest["stop_reason"] = (
@@ -261,9 +259,10 @@ def generate_pair(
             break
         if len(batch) != scene.count:
             scene = GraspScene(runtime, pair, len(batch), config.validation)
+        t = time.perf_counter()
         seeds, acceleration = trial_conditions(batch, config.validation, config.seed)
         initial = np.tile(np.eye(4), (len(batch), 1, 1))
-        up = np.asarray(pair.object_manifest["config"]["up_axis"])
+        up = np.asarray(config.posture.object_up_axis)
         alignment, _ = Rotation.align_vectors(np.array([[0.0, 0.0, 1.0]]), up[None, :])
         for i, candidate_id in enumerate(batch.ids):
             yaw = np.random.default_rng(int(candidate_id)).uniform(0, 2 * np.pi)
@@ -271,7 +270,13 @@ def generate_pair(
                 Rotation.from_rotvec([0, 0, yaw]).as_matrix() @ alignment.as_matrix()
             )
             initial[i, :3, 3] = scene.origins[i] + config.object_position_m
+        t_setup = time.perf_counter() - t
+
+        t = time.perf_counter()
         result = validate(scene, batch, initial, seeds, acceleration)
+        t_validate = time.perf_counter() - t
+
+        t = time.perf_counter()
         passed = np.flatnonzero(result.passed)
         legal = sampler.valid_closures(result.actual_tcp[passed], result.actual_joints[passed])
         failures["closure_posture_invalid"] += int((~legal).sum())
@@ -281,9 +286,6 @@ def generate_pair(
                 posture_diagnostic, result_arrays(result, passed[np.flatnonzero(~legal)[:1]])
             )
         passed = passed[legal]
-        successful_inputs = np.zeros(len(batch), dtype=np.bool_)
-        successful_inputs[passed] = True
-        sampling_history = sampler.record(batch, successful_inputs)
         measured_openings = np.interp(
             result.actual_joints[:, 0, active], commands[order], pair.arrays["opening_m"][order]
         )
@@ -291,7 +293,12 @@ def generate_pair(
         openings = np.concatenate((successful_openings, measured_openings[passed]))
         unique = distinct_indices(combined, openings, config.sampling)
         accepted = passed[unique[unique >= len(successful)] - len(successful)]
-        manifest["duplicates"] += len(passed) - len(accepted)
+        t_postprocess = time.perf_counter() - t
+
+        passed_physics = len(passed)
+        duplicate_count = passed_physics - len(accepted)
+
+        manifest["duplicates"] += duplicate_count
         accepted = accepted[: config.target_successes - len(successful)]
         successful = np.concatenate((successful, result.actual_tcp[accepted, 0]))
         successful_openings = np.concatenate((successful_openings, measured_openings[accepted]))
@@ -300,9 +307,6 @@ def generate_pair(
             directory / f"grasps-{batch_number:05d}.npz", result_arrays(result, accepted)
         )
         manifest["shards"].append(shard)
-        manifest["sampling_shards"].append(
-            write_arrays(directory / f"sampling-{batch_number:05d}.npz", sampling_history)
-        )
         for i in np.flatnonzero(~result.passed):
             trial = int(np.flatnonzero(result.failure[i])[0])
             code = FAILURES[result.failure[i, trial]]
@@ -321,7 +325,17 @@ def generate_pair(
             write_arrays(trace_path, trace)
             from graspdatagen.reporting import inspect_trace
 
-            inspect_trace(pair, trace_path, directory / "inspection.png", STAGES)
+            inspect_trace(pair, trace_path, directory / "inspection.png")
+        t_io = time.perf_counter() - t - t_postprocess
+        round_total = time.perf_counter() - round_started
+
+        profile_totals["sampling"] += t_sampling
+        profile_totals["setup"] += t_setup
+        profile_totals["validate"] += t_validate
+        profile_totals["postprocess"] += t_postprocess
+        profile_totals["io_other"] += max(0.0, t_io)
+        profile_totals["total"] += round_total
+
         manifest.update(
             successes=len(successful),
             attempted=manifest["attempted"] + len(batch),
@@ -329,11 +343,36 @@ def generate_pair(
             elapsed_s=elapsed + time.monotonic() - started,
         )
         commit_checkpoint(directory, manifest)
+
+        print(
+            f"PROFILE round={profile_round}: "
+            f"batch={len(batch)} "
+            f"sampling={t_sampling:.3f}s "
+            f"setup={t_setup:.3f}s "
+            f"validate={t_validate:.3f}s "
+            f"post={t_postprocess:.3f}s "
+            f"other/io={max(0.0, t_io):.3f}s "
+            f"total={round_total:.3f}s "
+            f"physics_pass={passed_physics} "
+            f"duplicates={duplicate_count} "
+            f"accepted={len(accepted)}",
+            flush=True,
+        )
+
+        print(
+            f"PROFILE cumulative: "
+            f"sampling={profile_totals['sampling']:.1f}s "
+            f"setup={profile_totals['setup']:.1f}s "
+            f"validate={profile_totals['validate']:.1f}s "
+            f"post={profile_totals['postprocess']:.1f}s "
+            f"other/io={profile_totals['io_other']:.1f}s "
+            f"total={profile_totals['total']:.1f}s",
+            flush=True,
+        )
+
         print(
             f"P3 {directory.name}: {len(successful)}/{config.target_successes}; "
             f"attempted={manifest['attempted']}; round={sampler.round_index}; "
-            f"duplicates={manifest['duplicates']}; "
-            f"coverage_deferrals={manifest['coverage_deferrals']}; "
             f"elapsed={manifest['elapsed_s']:.1f}s",
             flush=True,
         )

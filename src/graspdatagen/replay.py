@@ -13,19 +13,35 @@ from graspdatagen.geometry import pose_matrices
 from graspdatagen.records import FAILURES, PreparedPair
 from graspdatagen.runtime import GraspScene, PhysxRuntime
 from graspdatagen.storage import candidates_from_arrays, load_dataset, result_arrays, write_arrays
-from graspdatagen.validation import validate
+from graspdatagen.validation import trial_conditions, validate
 
 
 def replay(
-    runtime: PhysxRuntime, directory: Path, output: Path, grasp_id: int, environments: int
+    runtime: PhysxRuntime,
+    directory: Path,
+    output: Path,
+    grasp_id: int,
+    environments: int,
+    override_profile: ValidationProfile | None = None,
+    override_seed: int | None = None,
 ) -> dict[str, Any]:
     """grasp_id=0 replays the full dataset; a saved positive ID selects one grasp."""
     manifest, arrays = load_dataset(directory)
     pair = PreparedPair.load(Path(manifest["gripper_cache"]), Path(manifest["object_cache"]))
-    profile = ValidationProfile(**manifest["protocol"])
+    saved_profile = ValidationProfile(**manifest["protocol"])
+    profile = override_profile or saved_profile
     if profile.steps_per_second != runtime.config.steps_per_second:
         raise ValueError("Replay timestep differs from the saved protocol")
     all_candidates = candidates_from_arrays(arrays)
+    if override_profile is None:
+        trial_seed = arrays["trial_seed"]
+        acceleration = arrays["disturbance_accelerations_world_m_s2"]
+    else:
+        if override_seed is None:
+            raise ValueError("Strict replay requires an override seed")
+        trial_seed, acceleration = trial_conditions(
+            all_candidates, profile, override_seed
+        )
     indices = np.arange(len(all_candidates), dtype=np.int64)
     if grasp_id:
         indices = np.flatnonzero(all_candidates.ids == grasp_id)
@@ -55,8 +71,8 @@ def replay(
             scene,
             all_candidates.select(selected),
             initial_object,
-            arrays["trial_seed"][selected],
-            arrays["disturbance_accelerations_world_m_s2"][selected],
+            trial_seed[selected],
+            acceleration[selected],
         )
         report["passed"] += int(result.passed.sum())
         for i, candidate_id in enumerate(result.candidates.ids):

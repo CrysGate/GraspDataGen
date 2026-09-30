@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import time
-from collections import Counter
 from dataclasses import asdict
-from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
 import trimesh
 from scipy.spatial.transform import Rotation
-from scipy.stats import qmc
 
 from graspdatagen.assets import file_hash
 from graspdatagen.config import PostureConfig, SamplingConfig, digest
@@ -75,12 +72,11 @@ def posture_mask(poses: FloatArray, pair: PreparedPair, config: PostureConfig) -
     rotation = poses[..., :3, :3]
     approach = rotation @ pair.arrays["approach_axis_tcp"]
     up_tcp = pair.arrays["T_B_tcp"][:3, :3].T @ np.asarray(
-        pair.gripper_manifest["config"]["wrist_up_axis_base"]
+        config.wrist_up_axes_base[pair.gripper_manifest["name"]]
     )
     wrist = rotation @ up_tcp
-    up = np.asarray(pair.object_manifest["config"]["up_axis"])
-    return (approach @ up <= config.max_approach_up_dot) & (
-        wrist @ up >= config.min_wrist_up_dot
+    return (approach @ config.object_up_axis <= config.max_approach_up_dot) & (
+        wrist @ config.object_up_axis >= config.min_wrist_up_dot
     )
 
 
@@ -200,41 +196,27 @@ class Sampler:
         self.source: SurfaceQueries = SurfaceQueries(self.surface, device)
         self.proxy: SurfaceQueries = SurfaceQueries(trimesh.util.concatenate(hulls), device)
         self.radius: float = float(np.linalg.norm(self.surface.extents))
-        self.object_up_axis: FloatArray = np.asarray(pair.object_manifest["config"]["up_axis"])
-        self.bottom: float = float((self.surface.vertices @ self.object_up_axis).min())
+        self.bottom: float = float((self.surface.vertices @ posture.object_up_axis).min())
         self.samples: list[FloatArray] = []
         for joints in pair.arrays["joint_positions_m"]:
             mesh = trimesh.util.concatenate(gripper_meshes(pair, joints))
             points, _ = trimesh.sample.sample_surface(mesh, config.collision_samples, seed=seed)
             self.samples.append(np.vstack((mesh.vertices, points)))
-        self.retraction_limits: FloatArray = np.empty(0)
         self.raw: CandidateBatch = self._contacts()
         self.cursor: int = cursor
         self.rejected: int = 0
         self.consumed: int = 0
         self.posture_rejected: int = 0
-        self.candidate_duplicates: int = 0
-        self.coverage_deferrals: int = 0
-        self.visits: Counter[tuple[int, ...]] = Counter()
-        self.successful_visits: Counter[tuple[int, ...]] = Counter()
-        self.seen: set[bytes] = set()
 
     def _contacts(self) -> CandidateBatch:
         c = self.config
-        # Continue the same scrambled sequence across rounds: area, triangle
-        # barycentrics, roll phase and insertion depth cover their domains.
-        sequence = qmc.Sobol(d=5, scramble=True, seed=self.seed)
-        if self.round_index:
-            sequence.fast_forward(self.round_index * c.surface_samples)
-        samples = sequence.random(c.surface_samples)
-        weights = self.surface.area_faces if self.region_weights is None else self.region_weights
-        cumulative = np.cumsum(weights)
-        faces = np.searchsorted(cumulative, samples[:, 0] * cumulative[-1], side="right")
-        root = np.sqrt(samples[:, 1])
-        barycentric = np.column_stack(
-            (1 - root, root * (1 - samples[:, 2]), root * samples[:, 2])
+        seed = int(digest([self.seed, self.round_index])[:16], 16)
+        points, faces = trimesh.sample.sample_surface(
+            self.surface,
+            c.surface_samples,
+            face_weight=self.region_weights,
+            seed=seed,
         )
-        points = np.einsum("ni,nij->nj", barycentric, self.surface.triangles[faces])
         normals = self.surface.face_normals[faces]
         epsilon = self.radius * 1e-5
         hit = self.source.rays(points - epsilon * normals, -normals, self.radius)
@@ -250,7 +232,7 @@ class Sampler:
         centers = points[indices] - 0.5 * widths[indices, None] * n
         tangent = np.cross(n, np.eye(3)[np.abs(n).argmin(axis=1)])
         tangent /= np.linalg.norm(tangent, axis=1)[:, None]
-        phase = samples[:, 3] * (2 * np.pi)
+        phase = np.random.default_rng(seed).uniform(0, 2 * np.pi, c.surface_samples)
         angles = phase[indices] + np.tile(np.arange(c.rolls_per_contact), valid.sum()) * (
             2 * np.pi / c.rolls_per_contact
         )
@@ -262,10 +244,9 @@ class Sampler:
         opening_B = tcp[:3, :3] @ self.pair.arrays["opening_axis_tcp"]
         basis_B = np.column_stack((approach_B, opening_B, np.cross(approach_B, opening_B)))
         rotations = np.stack((approach, n, np.cross(approach, n)), axis=-1) @ basis_B.T
-        # Explore the shared finger contact depth instead of always inserting
-        # the object to the patch centroid, which can drive the palm into it.
-        patch_centers: list[FloatArray] = []
-        patch_depths: list[FloatArray] = []
+        # Aperture extrema lie at the distal tip on these tapered fingers.
+        # Locate the grasp in the contact patch interior, using its actual area.
+        patch_centers = []
         for side in range(2):
             patch = trimesh.Trimesh(
                 self.pair.arrays[f"contact_patch_{side}_vertices_body_m"],
@@ -276,10 +257,6 @@ class Sampler:
             patch_centers.append(
                 np.einsum("nij,j->ni", transforms[:, :3, :3], patch.centroid) + transforms[:, :3, 3]
             )
-            vertices = np.einsum("nij,pj->npi", transforms[:, :3, :3], patch.vertices)
-            vertices += transforms[:, None, :3, 3]
-            depths = vertices @ approach_B
-            patch_depths.append(np.column_stack((depths.min(axis=1), depths.max(axis=1))))
         contact_center = np.mean(patch_centers, axis=0)
         offset = np.column_stack(
             [
@@ -287,20 +264,6 @@ class Sampler:
                 for k in range(3)
             ]
         )
-        # Leave the configured clearance at both ends of the measured overlap;
-        # no gripper-specific insertion distance or extra candidate multiplier.
-        lower = np.max([depths[:, 0] for depths in patch_depths], axis=0) + c.clearance_m
-        upper = np.min([depths[:, 1] for depths in patch_depths], axis=0) - c.clearance_m
-        if np.any(lower >= upper):
-            raise ValueError("Finger contact depth must overlap by more than twice the clearance")
-        lower = np.interp(widths[indices], self.pair.arrays["opening_m"], lower)
-        upper = np.interp(widths[indices], self.pair.arrays["opening_m"], upper)
-        depth_phase = (
-            samples[indices, 4]
-            + np.tile(np.arange(c.rolls_per_contact), valid.sum()) / c.rolls_per_contact
-        ) % 1
-        depth = lower + depth_phase * (upper - lower)
-        offset += (depth - offset @ approach_B)[:, None] * approach_B
         base = np.tile(np.eye(4), (len(indices), 1, 1))
         base[:, :3, :3] = rotations
         base[:, :3, 3] = centers - np.einsum("nij,nj->ni", rotations, offset)
@@ -323,87 +286,56 @@ class Sampler:
             np.tile(self.pair.arrays["joint_positions_m"][-1], (len(ids), 1)),
             np.full(len(ids), self.pair.definition["closed_command_m"]),
         )
-        # Visit different contact locations before taking more rolls at the same
-        # location. COM distance breaks ties rather than monopolizing the budget.
-        cells = np.floor(centers / c.dedup_translation_m).astype(np.int64)
-        _, groups, counts = np.unique(cells, axis=0, return_inverse=True, return_counts=True)
-        grouped = np.argsort(groups, kind="stable")
-        ranks = np.empty(len(groups), dtype=np.int64)
-        ranks[grouped] = np.arange(len(groups)) - np.repeat(np.cumsum(counts) - counts, counts)
+        # Preserve the short-COM-lever heuristic within each coverage bucket,
+        # while interleaving buckets so one local surface mode cannot consume
+        # the candidate budget before other annotated regions are validated.
         com = np.asarray(self.pair.object_manifest["physical"]["com_pose_xyzw"][:3])
-        order = np.lexsort((np.linalg.norm(centers - com, axis=1), ranks))
-        self.retraction_limits = (upper - depth)[order]
-        return batch.select(order)
-
-    def coverage(self, batch: CandidateBatch) -> tuple[np.ndarray, np.ndarray]:
-        """Grid cells schedule revisits; they never replace actual-pose deduplication.
-
-        Translation/opening use the output resolution; quaternion bins use its
-        corresponding chord length. Cell boundaries only affect exploration order.
-        With fixed pair/config, target and width determine all approach commands,
-        so their exact bytes identify repeated inputs independently of candidate IDs.
-        """
-        c = self.config
-        quaternions = Rotation.from_matrix(batch.target[:, :3, :3]).as_quat(canonical=True)
-        descriptors = np.column_stack(
-            (
-                batch.target[:, :3, 3] / c.dedup_translation_m,
-                quaternions / (2 * np.sin(min(c.dedup_rotation_rad, np.pi) / 4)),
-                batch.contact_width / c.dedup_opening_m,
-            )
+        quality_order = np.argsort(
+            np.linalg.norm(centers - com, axis=1),
+            kind="stable",
         )
-        cells = np.floor(descriptors).astype(np.int64)
-        signatures = np.empty((len(batch), sha256().digest_size), dtype=np.uint8)
-        for i in range(len(batch)):
-            signature = sha256(batch.target[i].tobytes() + batch.contact_width[i].tobytes())
-            signatures[i] = np.frombuffer(signature.digest(), dtype=np.uint8)
-        return cells, signatures
 
-    def available(self, cell: tuple[int, ...], signature: bytes) -> bool:
-        """Reserve one exploration visit per cell/round; successes slow revisits.
+        # Object-relative normalized spatial cells make this independent of
+        # object scale and do not change the annotation's allowed surface.
+        spatial_bin_count = 6
+        bounds = np.asarray(self.surface.bounds)
+        extent = np.maximum(bounds[1] - bounds[0], np.finfo(np.float64).eps)
+        spatial_bins = np.floor(
+            (centers - bounds[0]) / extent * spatial_bin_count
+        ).astype(np.int64)
+        spatial_bins = np.clip(spatial_bins, 0, spatial_bin_count - 1)
 
-        Failed neighborhoods can be sampled again next round. Each successful
-        visit spends an additional round of priority, favoring uncovered regions
-        without permanently excluding nearby poses that may close differently.
-        """
-        if signature in self.seen:
-            self.candidate_duplicates += 1
-            return False
-        if self.visits[cell] + self.successful_visits[cell] > self.round_index:
-            self.coverage_deferrals += 1
-            return False
-        return True
+        # Bucket only by position. Approach orientation remains governed by
+        # the existing posture and physics validation instead of being forced
+        # into equally represented direction classes.
+        bucket_keys = spatial_bins
+        buckets: dict[tuple[int, ...], list[int]] = {}
+        for index in quality_order:
+            key = tuple(int(value) for value in bucket_keys[index])
+            buckets.setdefault(key, []).append(int(index))
 
-    def record(self, batch: CandidateBatch, successful: np.ndarray) -> dict[str, np.ndarray]:
-        """Persist every attempted input, including failures and duplicate successes."""
-        cells, signatures = self.coverage(batch)
-        self.successful_visits.update(tuple(cell) for cell in cells[successful])
-        return {"cells": cells, "signatures": signatures, "successful": successful}
+        diverse_order: list[int] = []
+        depth = 0
+        while len(diverse_order) < len(batch):
+            added = False
+            for bucket in buckets.values():
+                if depth < len(bucket):
+                    diverse_order.append(bucket[depth])
+                    added = True
+            if not added:
+                break
+            depth += 1
 
-    def restore(self, history: dict[str, np.ndarray]) -> None:
-        """Rebuild only acknowledged visits; uncommitted candidates are retried."""
-        count = len(history["successful"])
-        expected = {
-            "cells": ((count, 8), np.dtype(np.int64)),
-            "signatures": ((count, sha256().digest_size), np.dtype(np.uint8)),
-            "successful": ((count,), np.dtype(np.bool_)),
-        }
-        if set(history) != set(expected) or any(
-            history[key].shape != shape or history[key].dtype != dtype
-            for key, (shape, dtype) in expected.items()
-        ):
-            raise ValueError("Invalid sampling history arrays")
-        signatures = [row.tobytes() for row in history["signatures"]]
-        if len(set(signatures)) != count or self.seen.intersection(signatures):
-            raise ValueError("Sampling history contains duplicate attempts")
-        self.seen.update(signatures)
-        self.visits.update(tuple(cell) for cell in history["cells"])
-        self.successful_visits.update(
-            tuple(cell) for cell in history["cells"][history["successful"]]
+        print(
+            f"P2 SAMPLE_SPATIAL_DIVERSITY round={self.round_index} "
+            f"candidates={len(batch)} buckets={len(buckets)} "
+            f"spatial_bins={spatial_bin_count}",
+            flush=True,
         )
+        return batch.select(np.asarray(diverse_order, dtype=np.int64))
 
     def take(self, count: int, deadline: float) -> CandidateBatch:
-        """Retract colliding grasps within the measured finger contact region.
+        """Choose the widest calibrated opening whose entire sampled approach is clear.
 
         Geometric filtering is conservative screening, not a physical success.
         PhysX checks exact collisions, natural closure and all holding stages.
@@ -419,23 +351,19 @@ class Sampler:
                 self.cursor = 0
                 self.raw = self._contacts()
                 continue
-            indices = np.arange(
-                self.cursor, min(self.cursor + count - total, len(self.raw)), dtype=np.int64
+            batch = self.raw.select(
+                np.arange(
+                    self.cursor, min(self.cursor + count - total, len(self.raw)), dtype=np.int64
+                )
             )
-            batch = self.raw.select(indices)
             self.cursor += len(batch)
             self.consumed += len(batch)
             upright = posture_mask(batch.target, self.pair, self.posture)
             self.posture_rejected += int((~upright).sum())
             batch = batch.select(np.flatnonzero(upright))
-            limits = self.retraction_limits[indices[upright]]
-            if not len(batch):
-                continue
             base = batch.target @ np.linalg.inv(self.pair.arrays["T_B_tcp"])
             displacement = batch.pregrasp[:, :3, 3] - batch.target[:, :3, 3]
-            retreat_axis = displacement / c.pregrasp_distance_m
             chosen = np.full(len(batch), -1, dtype=np.int64)
-            retractions = np.zeros(len(batch))
             for state in reversed(range(len(self.samples))):
                 pending = np.flatnonzero(
                     (chosen < 0)
@@ -447,56 +375,25 @@ class Sampler:
                 if not len(pending):
                     continue
                 sample = self.samples[state]
-                retreat = np.zeros(len(batch))
-                while len(pending):
-                    margin = np.full(len(pending), np.inf)
-                    for fraction in np.linspace(0, 1, c.path_samples):
-                        world = np.einsum("nij,pj->npi", base[pending, :3, :3], sample)
-                        world += (
-                            base[pending, :3, 3]
-                            + retreat[pending, None] * retreat_axis[pending]
-                            + displacement[pending] * fraction
-                        )[:, None, :]
-                        bottom = (world @ self.object_up_axis).min(axis=1)
-                        distance = self.proxy.distances(world.reshape(-1, 3), self.radius + 1)
-                        margin = np.minimum(
-                            margin,
-                            np.minimum(
-                                bottom - self.bottom - self.posture.bottom_clearance_m,
-                                distance.reshape(len(pending), -1).min(axis=1) - c.clearance_m,
-                            ),
-                        )
-                        if (margin <= 0).all():
-                            break
-                    clear = margin > 0
-                    chosen[pending[clear]] = state
-                    retractions[pending[clear]] = retreat[pending[clear]]
-                    # Penetration bounds the required translation from below.
-                    # Use the output position resolution for progress near the
-                    # boundary, and check the distal limit itself before giving up.
-                    retry = (~clear) & (retreat[pending] < limits[pending])
-                    step = np.maximum(-margin[retry], c.dedup_translation_m)
-                    pending = pending[retry]
-                    retreat[pending] = np.minimum(retreat[pending] + step, limits[pending])
-            shift = retractions[:, None] * retreat_axis
-            batch.target[:, :3, 3] += shift
-            batch.pregrasp[:, :3, 3] += shift
-            cells, signatures = self.coverage(batch)
+                clear = np.ones(len(pending), dtype=np.bool_)
+                for fraction in np.linspace(0, 1, c.path_samples):
+                    world = np.einsum("nij,pj->npi", base[pending, :3, :3], sample)
+                    world += (base[pending, :3, 3] + displacement[pending] * fraction)[:, None, :]
+                    clear &= (world @ self.posture.object_up_axis).min(axis=1) >= (
+                        self.bottom + self.posture.bottom_clearance_m
+                    )
+                    distance = self.proxy.distances(world.reshape(-1, 3), self.radius + 1)
+                    clear &= distance.reshape(len(pending), -1).min(axis=1) > c.clearance_m
+                    if not clear.any():
+                        break
+                chosen[pending[clear]] = state
             keep = np.flatnonzero(chosen >= 0)
-            self.rejected += len(batch) - len(keep)
-            diverse: list[int] = []
-            for i in keep:
-                cell, signature = tuple(cells[i]), signatures[i].tobytes()
-                if self.available(cell, signature):
-                    self.visits[cell] += 1
-                    self.seen.add(signature)
-                    diverse.append(int(i))
-            keep = np.asarray(diverse, dtype=np.int64)
             kept = batch.select(keep)
             kept.opening[:] = self.pair.arrays["opening_m"][chosen[keep]]
             kept.pregrasp_joints[:] = self.pair.arrays["joint_positions_m"][chosen[keep]]
             accepted.append(kept)
             total += len(kept)
+            self.rejected += len(batch) - len(kept)
         if not accepted:
             return self.raw.select(np.empty(0, dtype=np.int64))
         return CandidateBatch(
@@ -522,7 +419,7 @@ class Sampler:
             blend = np.clip((command - commands[lower]) / (commands[upper] - commands[lower]), 0, 1)
             sample = (1 - blend) * self.samples[lower] + blend * self.samples[upper]
             points = transform_points(sample, bases[index])
-            valid[index] &= (points @ self.object_up_axis).min() >= (
+            valid[index] &= (points @ self.posture.object_up_axis).min() >= (
                 self.bottom + self.posture.bottom_clearance_m
             )
         return np.asarray(valid.all(axis=1))
