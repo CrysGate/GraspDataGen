@@ -337,6 +337,11 @@ class ValidationProfile:
         if self.stable_window_s > min(self.close_s, self.hold_s, self.final_hold_s):
             raise ValueError("Stable window exceeds a holding stage")
 
+    @classmethod
+    def from_saved_protocol(cls, protocol: dict[str, Any]) -> ValidationProfile:
+        """Read current fields from saved manifests that may include retired metadata."""
+        return cls(**{name: protocol[name] for name in cls.__dataclass_fields__})
+
 
 @dataclass(frozen=True)
 class SamplingConfig:
