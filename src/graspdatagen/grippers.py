@@ -103,7 +103,9 @@ def extract_gripper(
         if not src:
             raise ValueError(f"Missing extraction boundary: {relative}")
         target = Sdf.Path("/Gripper/" + relative)
-        stage.DefinePrim(target.GetParentPath(), "Scope")
+        parent = stage.GetPrimAtPath(target.GetParentPath())
+        if not parent:
+            stage.DefinePrim(target.GetParentPath(), "Scope")
         Sdf.CopySpec(source.GetRootLayer(), src.GetPath(), stage.GetRootLayer(), target)
         for child in Usd.PrimRange(src):
             mapping[str(child.GetPath())] = str(

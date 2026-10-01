@@ -1,0 +1,27 @@
+# Extraction boundary and coordinate conventions of the Franka Panda hand.
+name: franka_panda
+robot_config: configs/robots/franka_panda.yaml
+root_prim: /panda
+base_body: panda_hand
+retained_bodies: [panda_hand, panda_leftfinger, panda_rightfinger]
+retained_joints:
+  - panda_hand/panda_finger_joint1
+  - panda_hand/panda_finger_joint2
+tcp_parent_prim: panda_hand
+finger_colliders:
+  - panda_leftfinger/geometry/panda_leftfinger
+  - panda_rightfinger/geometry/panda_rightfinger
+approach_axis_base: [0.0, 0.0, 1.0]
+opening_axis_base: [0.0, 1.0, 0.0]
+contact_region:
+  approach_interval_m: [0.06, 0.105]
+  lateral_interval_m: [-0.010, 0.010]
+  normal_alignment_min: 0.9
+material:
+  static_friction: 0.8
+  dynamic_friction: 0.8
+  restitution: 0.0
+  source: Explicit configured Franka finger friction model; source asset material is not treated as measured hardware friction.
+  sensitivity_friction: [0.3, 0.5, 0.7, 0.8]
+calibration: configs/calibration.yaml
+wrist_up_axis_base: [1.0, 0.0, 0.0]

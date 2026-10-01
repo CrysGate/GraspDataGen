@@ -1,0 +1,12 @@
+# Source USD owns Panda joint drives, limits and the finger mimic constraint.
+name: franka_panda
+usd_path: Assets/Robots/franka_panda/franka.usd
+kinematics:
+  tcp:
+    parent_frame: panda_hand
+    position_m: [0.0, 0.0, 0.1034]
+    orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+gripper:
+  joint_names: [panda_finger_joint1, panda_finger_joint2]
+  command_joint_names: [panda_finger_joint1]
+  finger_body_names: [panda_leftfinger, panda_rightfinger]
