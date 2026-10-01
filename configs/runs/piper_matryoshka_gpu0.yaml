@@ -1,0 +1,16 @@
+# Piper grasp generation for 25 matryoshka assets, split across two GPUs.
+parameters: configs/parameters.yaml
+grippers: [configs/grippers/piper.yaml]
+manifest: configs/objects/bottle_matryoshka.yaml
+cache: outputs/prepared
+output: outputs/piper-matryoshka-gpu0
+device: 0
+environments: 1024
+seed: 20260908
+target_successes: 1024
+candidate_budget: 204800
+time_budget_s: 3600
+objects: [matryoshka_00000, matryoshka_00001, matryoshka_00002, matryoshka_00003, matryoshka_00004, matryoshka_00005, matryoshka_00006, matryoshka_00007, matryoshka_00008, matryoshka_00009, matryoshka_00010, matryoshka_00011, matryoshka_00012]
+sampling:
+  rolls_per_contact: 1
+  object_yaw_samples: 32

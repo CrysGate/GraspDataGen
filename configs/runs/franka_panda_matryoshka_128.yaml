@@ -1,0 +1,16 @@
+# Franka Panda extraction and physical-validation smoke test.
+parameters: configs/parameters.yaml
+grippers: [configs/grippers/franka_panda.yaml]
+manifest: configs/objects/bottle_matryoshka.yaml
+cache: outputs/prepared
+output: outputs/franka-panda-matryoshka-128
+device: 1
+environments: 512
+seed: 20260908
+target_successes: 128
+candidate_budget: 8192
+time_budget_s: 1800
+objects: [matryoshka_00000]
+sampling:
+  rolls_per_contact: 1
+  object_yaw_samples: 32
