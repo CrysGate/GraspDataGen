@@ -51,14 +51,21 @@ def gripper_meshes(pair: PreparedPair, joints: FloatArray) -> list[trimesh.Trime
     return meshes
 
 
-def distinct_indices(poses: FloatArray, openings: FloatArray, config: SamplingConfig) -> np.ndarray:
+def distinct_indices(
+    poses: FloatArray,
+    openings: FloatArray,
+    config: SamplingConfig,
+) -> np.ndarray:
     accepted: list[int] = []
     rotations = Rotation.from_matrix(poses[:, :3, :3]).as_quat() if len(poses) else []
     for i in range(len(poses)):
         previous = np.asarray(accepted, dtype=np.int64)
         nearby = previous[
             (
-                np.linalg.norm(poses[previous, :3, 3] - poses[i, :3, 3], axis=1)
+                np.linalg.norm(
+                    poses[previous, :3, 3] - poses[i, :3, 3],
+                    axis=1,
+                )
                 < config.dedup_translation_m
             )
             & (np.abs(openings[previous] - openings[i]) < config.dedup_opening_m)
@@ -79,9 +86,7 @@ def posture_mask(poses: FloatArray, pair: PreparedPair, config: PostureConfig) -
     )
     wrist = rotation @ up_tcp
     up = np.asarray(pair.object_manifest["config"]["up_axis"])
-    return (approach @ up <= config.max_approach_up_dot) & (
-        wrist @ up >= config.min_wrist_up_dot
-    )
+    return (approach @ up <= config.max_approach_up_dot) & (wrist @ up >= config.min_wrist_up_dot)
 
 
 class Sampler:
@@ -121,12 +126,8 @@ class Sampler:
         region_path: Path | None = None
         if grasp_regions is not None:
             if not grasp_regions.is_dir():
-                raise ValueError(
-                    f"Grasp region directory not found: {grasp_regions}"
-                )
-            region_path = (
-                grasp_regions / f"{pair.object_manifest['name']}.npz"
-            )
+                raise ValueError(f"Grasp region directory not found: {grasp_regions}")
+            region_path = grasp_regions / f"{pair.object_manifest['name']}.npz"
 
         if region_path is not None and region_path.is_file():
             with np.load(region_path, allow_pickle=False) as region:
@@ -144,18 +145,10 @@ class Sampler:
                 annotated_vertices = np.asarray(region["surface_vertices_m"])
                 annotated_faces = np.asarray(region["surface_faces"], dtype=np.int64)
 
-            if not np.array_equal(
-                annotated_vertices, np.asarray(self.surface.vertices)
-            ):
-                raise ValueError(
-                    "Grasp region annotation vertices do not match prepared surface"
-                )
-            if not np.array_equal(
-                annotated_faces, np.asarray(self.surface.faces)
-            ):
-                raise ValueError(
-                    "Grasp region annotation faces do not match prepared surface"
-                )
+            if not np.array_equal(annotated_vertices, np.asarray(self.surface.vertices)):
+                raise ValueError("Grasp region annotation vertices do not match prepared surface")
+            if not np.array_equal(annotated_faces, np.asarray(self.surface.faces)):
+                raise ValueError("Grasp region annotation faces do not match prepared surface")
 
             if (
                 allowed_faces.ndim != 1
@@ -166,20 +159,11 @@ class Sampler:
             ):
                 raise ValueError("Invalid grasp region face indices")
 
-            self.region_weights = np.zeros(
-                len(self.surface.faces), dtype=np.float64
-            )
-            self.region_weights[allowed_faces] = self.surface.area_faces[
-                allowed_faces
-            ]
+            self.region_weights = np.zeros(len(self.surface.faces), dtype=np.float64)
+            self.region_weights[allowed_faces] = self.surface.area_faces[allowed_faces]
 
-            if (
-                not np.isfinite(self.region_weights).all()
-                or self.region_weights.sum() <= 0
-            ):
-                raise ValueError(
-                    "Grasp region has no positive finite surface area"
-                )
+            if not np.isfinite(self.region_weights).all() or self.region_weights.sum() <= 0:
+                raise ValueError("Grasp region has no positive finite surface area")
 
             self.region_hash = file_hash(region_path)
 
@@ -231,9 +215,7 @@ class Sampler:
         cumulative = np.cumsum(weights)
         faces = np.searchsorted(cumulative, samples[:, 0] * cumulative[-1], side="right")
         root = np.sqrt(samples[:, 1])
-        barycentric = np.column_stack(
-            (1 - root, root * (1 - samples[:, 2]), root * samples[:, 2])
-        )
+        barycentric = np.column_stack((1 - root, root * (1 - samples[:, 2]), root * samples[:, 2]))
         points = np.einsum("ni,nij->nj", barycentric, self.surface.triangles[faces])
         normals = self.surface.face_normals[faces]
         epsilon = self.radius * 1e-5
@@ -334,34 +316,75 @@ class Sampler:
         order = np.lexsort((np.linalg.norm(centers - com, axis=1), ranks))
         self.retraction_limits = (upper - depth)[order]
         batch = batch.select(order)
+        return batch
 
-        if c.object_yaw_samples == 1 or not len(batch):
-            return batch
+    def yaw_variants(self, batch: CandidateBatch) -> CandidateBatch:
+        """Generate nonzero-yaw variants of successful base grasps."""
+        count = self.config.object_yaw_samples
+        if count == 1 or not len(batch):
+            return batch.select(np.empty(0, dtype=np.int64))
 
-        base_indices = np.repeat(np.arange(len(batch)), c.object_yaw_samples)
-        yaw_indices = np.tile(np.arange(c.object_yaw_samples), len(batch))
-        yaw_angles = 2 * np.pi * yaw_indices / c.object_yaw_samples
-        yaw_rotations = Rotation.from_euler("z", yaw_angles[:, None]).as_matrix()
+        bins = np.arange(count)
+        distance = np.minimum(bins, count - bins).astype(float)
+        distance[0] = -1
+        yaw_order: list[int] = []
+
+        for _ in range(count - 1):
+            yaw = int(np.argmax(distance))
+            yaw_order.append(yaw)
+            separation = np.abs(bins - yaw)
+            separation = np.minimum(separation, count - separation)
+            distance = np.minimum(distance, separation)
+            distance[yaw] = -1
+
+        base_indices = np.tile(np.arange(len(batch)), count - 1)
+        yaw_indices = np.repeat(
+            np.asarray(yaw_order, dtype=np.int64),
+            len(batch),
+        )
+        yaw_angles = 2 * np.pi * yaw_indices / count
+
+        axis = self.object_up_axis / np.linalg.norm(self.object_up_axis)
+        rotations = Rotation.from_rotvec(yaw_angles[:, None] * axis).as_matrix()
 
         target = batch.target[base_indices].copy()
         pregrasp = batch.pregrasp[base_indices].copy()
+
         for poses in (target, pregrasp):
             poses[:, :3, :3] = np.einsum(
-                "nij,njk->nik", yaw_rotations, poses[:, :3, :3]
+                "nij,njk->nik",
+                rotations,
+                poses[:, :3, :3],
             )
             poses[:, :3, 3] = np.einsum(
-                "nij,nj->ni", yaw_rotations, poses[:, :3, 3]
+                "nij,nj->ni",
+                rotations,
+                poses[:, :3, 3],
             )
 
         ids = np.asarray(
             [
-                int(digest([self.identity, int(batch.ids[base]), int(yaw)])[:15], 16) + 1
-                for base, yaw in zip(base_indices, yaw_indices, strict=True)
+                int(
+                    digest(
+                        [
+                            self.identity,
+                            int(batch.ids[base]),
+                            int(yaw),
+                        ]
+                    )[:15],
+                    16,
+                )
+                + 1
+                for base, yaw in zip(
+                    base_indices,
+                    yaw_indices,
+                    strict=True,
+                )
             ],
             dtype=np.int64,
         )
-        self.retraction_limits = self.retraction_limits[base_indices]
-        return CandidateBatch(
+
+        variants = CandidateBatch(
             ids,
             target,
             pregrasp,
@@ -370,6 +393,31 @@ class Sampler:
             batch.pregrasp_joints[base_indices],
             batch.close_command[base_indices],
         )
+
+        upright = posture_mask(
+            variants.target,
+            self.pair,
+            self.posture,
+        )
+        self.posture_rejected += int((~upright).sum())
+        return variants.select(np.flatnonzero(upright))
+
+    def reserve(self, batch: CandidateBatch) -> CandidateBatch:
+        """Reserve targeted yaw candidates without coverage deferral."""
+        cells, signatures = self.coverage(batch)
+        keep: list[int] = []
+
+        for i in range(len(batch)):
+            signature = signatures[i].tobytes()
+            if signature in self.seen:
+                self.candidate_duplicates += 1
+                continue
+
+            self.seen.add(signature)
+            self.visits[tuple(cells[i])] += 1
+            keep.append(i)
+
+        return batch.select(np.asarray(keep, dtype=np.int64))
 
     def coverage(self, batch: CandidateBatch) -> tuple[np.ndarray, np.ndarray]:
         """Grid cells schedule revisits; they never replace actual-pose deduplication.

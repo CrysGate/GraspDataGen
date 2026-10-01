@@ -16,7 +16,7 @@ from graspdatagen.assets import file_hash, prepare_object, source_fingerprint
 from graspdatagen.config import RunConfig, digest, load_gripper
 from graspdatagen.geometry import pose_matrices
 from graspdatagen.grippers import prepare_gripper
-from graspdatagen.records import FAILURES, METRICS, STAGES, PreparedPair
+from graspdatagen.records import FAILURES, METRICS, STAGES, CandidateBatch, PreparedPair
 from graspdatagen.runtime import GraspScene, PhysxRuntime, RuntimeConfig
 from graspdatagen.sampling import Sampler, distinct_indices
 from graspdatagen.storage import (
@@ -191,15 +191,14 @@ def generate_pair(
             "sampling_state": {"round": 0, "cursor": 0},
             "sampling_shards": [],
             "candidate_duplicates": 0,
+            "yaw_pending": None,
             "coverage_deferrals": 0,
             "geometric_rejections": 0,
             "posture_rejections": 0,
             "surface_candidates_consumed": 0,
         }
         commit_checkpoint(directory, manifest)
-    referenced = {
-        shard["path"] for shard in manifest["shards"] + manifest["sampling_shards"]
-    }
+    referenced = {shard["path"] for shard in manifest["shards"] + manifest["sampling_shards"]}
     for pattern in ("grasps-*", "sampling-*"):
         for orphan in directory.glob(pattern):
             if orphan.name not in referenced:
@@ -225,6 +224,17 @@ def generate_pair(
             sampler.restore({key: history[key] for key in history.files})
     if len(sampler.seen) != manifest["attempted"]:
         raise ValueError("Sampling history disagrees with attempted candidate count")
+    pending_yaw: list[CandidateBatch] = []
+    pending_info = manifest.get("yaw_pending")
+    if pending_info is not None:
+        pending_path = directory / pending_info["path"]
+        if file_hash(pending_path) != pending_info["sha256"]:
+            raise ValueError(f"Corrupt pending yaw candidates: {pending_path}")
+
+        with np.load(pending_path, allow_pickle=False) as data:
+            pending_yaw.append(
+                CandidateBatch(*(data[name] for name in CandidateBatch.__dataclass_fields__))
+            )
     scene = GraspScene(runtime, pair, config.environments, config.validation)
     failures: Counter[str] = Counter(manifest["failures"])
     active = pair.definition["calibration"]["active_index"]
@@ -243,9 +253,37 @@ def generate_pair(
         and manifest["attempted"] < config.candidate_budget
         and time.monotonic() < deadline
     ):
-        batch = sampler.take(
-            min(config.environments, config.candidate_budget - manifest["attempted"]), deadline
+        batch_kind = "yaw" if pending_yaw else "base"
+        remaining_target = config.target_successes - len(successful)
+        requested = (
+            int(np.ceil(1.25 * remaining_target)) if batch_kind == "yaw" else 8 * remaining_target
         )
+        batch_limit = min(
+            config.environments,
+            config.candidate_budget - manifest["attempted"],
+            requested,
+        )
+
+        if pending_yaw:
+            queued = pending_yaw.pop(0)
+            selected = np.arange(
+                min(batch_limit, len(queued)),
+                dtype=np.int64,
+            )
+            batch = sampler.reserve(queued.select(selected))
+
+            if len(selected) < len(queued):
+                remaining_indices = np.arange(
+                    len(selected),
+                    len(queued),
+                    dtype=np.int64,
+                )
+                pending_yaw.insert(
+                    0,
+                    queued.select(remaining_indices),
+                )
+        else:
+            batch = sampler.take(batch_limit, deadline)
         manifest.update(
             sampling_state={"round": sampler.round_index, "cursor": sampler.cursor},
             geometric_rejections=prior_rejected + sampler.rejected,
@@ -255,6 +293,8 @@ def generate_pair(
             coverage_deferrals=prior_deferrals + sampler.coverage_deferrals,
         )
         if not len(batch):
+            if batch_kind == "yaw":
+                continue
             manifest["stop_reason"] = (
                 "time_budget" if time.monotonic() >= deadline else "surface_rounds_exhausted"
             )
@@ -295,6 +335,28 @@ def generate_pair(
         accepted = accepted[: config.target_successes - len(successful)]
         successful = np.concatenate((successful, result.actual_tcp[accepted, 0]))
         successful_openings = np.concatenate((successful_openings, measured_openings[accepted]))
+        if (
+            batch_kind == "base"
+            and len(accepted)
+            and config.sampling.object_yaw_samples > 1
+            and len(successful) < config.target_successes
+        ):
+            remaining = config.target_successes - len(successful)
+            variants = sampler.yaw_variants(batch.select(accepted))
+
+            if len(variants):
+                combined_targets = np.concatenate((successful, variants.target))
+                combined_openings = np.concatenate((successful_openings, variants.opening))
+                unique = distinct_indices(
+                    combined_targets,
+                    combined_openings,
+                    config.sampling,
+                )
+                variant_indices = unique[unique >= len(successful)] - len(successful)
+                variants = variants.select(variant_indices[: 2 * remaining])
+
+                if len(variants):
+                    pending_yaw.append(variants)
         batch_number = len(manifest["shards"])
         shard = write_arrays(
             directory / f"grasps-{batch_number:05d}.npz", result_arrays(result, accepted)
@@ -322,6 +384,25 @@ def generate_pair(
             from graspdatagen.reporting import inspect_trace
 
             inspect_trace(pair, trace_path, directory / "inspection.png", STAGES)
+        if len(successful) >= config.target_successes:
+            pending_yaw.clear()
+
+        pending_path = directory / "yaw-pending.npz"
+        if pending_yaw:
+            queued = CandidateBatch(
+                *(
+                    np.concatenate([getattr(item, name) for item in pending_yaw])
+                    for name in CandidateBatch.__dataclass_fields__
+                )
+            )
+            manifest["yaw_pending"] = write_arrays(
+                pending_path,
+                {name: getattr(queued, name) for name in CandidateBatch.__dataclass_fields__},
+            )
+        else:
+            pending_path.unlink(missing_ok=True)
+            manifest["yaw_pending"] = None
+
         manifest.update(
             successes=len(successful),
             attempted=manifest["attempted"] + len(batch),
@@ -332,6 +413,8 @@ def generate_pair(
         print(
             f"P3 {directory.name}: {len(successful)}/{config.target_successes}; "
             f"attempted={manifest['attempted']}; round={sampler.round_index}; "
+            f"source={batch_kind}; "
+            f"pending_yaw={sum(len(item) for item in pending_yaw)}; "
             f"duplicates={manifest['duplicates']}; "
             f"coverage_deferrals={manifest['coverage_deferrals']}; "
             f"elapsed={manifest['elapsed_s']:.1f}s",
