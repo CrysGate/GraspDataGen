@@ -8,7 +8,6 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-
 HTML = r"""<!doctype html>
 <html>
 <head>

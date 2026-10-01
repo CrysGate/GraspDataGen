@@ -7,7 +7,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 HTML = r"""<!doctype html>
 <html>
 <head>

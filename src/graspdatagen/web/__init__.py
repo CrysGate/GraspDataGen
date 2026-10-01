@@ -246,7 +246,11 @@ def serve(
             if state["ready"]:
                 await command("mode", mode.value)
                 visible_count.set_text(
-                    str(len(state["candidates"]) if mode.value == "all" else min(1, len(state["candidates"])))
+                    str(
+                        len(state["candidates"])
+                        if mode.value == "all"
+                        else min(1, len(state["candidates"]))
+                    )
                 )
 
         async def workspace_changed() -> None:
