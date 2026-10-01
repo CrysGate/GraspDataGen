@@ -356,6 +356,7 @@ class SamplingConfig:
     dedup_translation_m: float
     dedup_rotation_rad: float
     dedup_opening_m: float
+    object_yaw_samples: int
 
     def __post_init__(self) -> None:
         for value in vars(self).values():
@@ -366,6 +367,7 @@ class SamplingConfig:
             "rolls_per_contact",
             "collision_samples",
             "path_samples",
+            "object_yaw_samples",
         ):
             if type(getattr(self, name)) is not int:
                 raise ValueError(f"{name} must be an integer")

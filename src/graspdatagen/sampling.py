@@ -333,7 +333,43 @@ class Sampler:
         com = np.asarray(self.pair.object_manifest["physical"]["com_pose_xyzw"][:3])
         order = np.lexsort((np.linalg.norm(centers - com, axis=1), ranks))
         self.retraction_limits = (upper - depth)[order]
-        return batch.select(order)
+        batch = batch.select(order)
+
+        if c.object_yaw_samples == 1 or not len(batch):
+            return batch
+
+        base_indices = np.repeat(np.arange(len(batch)), c.object_yaw_samples)
+        yaw_indices = np.tile(np.arange(c.object_yaw_samples), len(batch))
+        yaw_angles = 2 * np.pi * yaw_indices / c.object_yaw_samples
+        yaw_rotations = Rotation.from_euler("z", yaw_angles[:, None]).as_matrix()
+
+        target = batch.target[base_indices].copy()
+        pregrasp = batch.pregrasp[base_indices].copy()
+        for poses in (target, pregrasp):
+            poses[:, :3, :3] = np.einsum(
+                "nij,njk->nik", yaw_rotations, poses[:, :3, :3]
+            )
+            poses[:, :3, 3] = np.einsum(
+                "nij,nj->ni", yaw_rotations, poses[:, :3, 3]
+            )
+
+        ids = np.asarray(
+            [
+                int(digest([self.identity, int(batch.ids[base]), int(yaw)])[:15], 16) + 1
+                for base, yaw in zip(base_indices, yaw_indices, strict=True)
+            ],
+            dtype=np.int64,
+        )
+        self.retraction_limits = self.retraction_limits[base_indices]
+        return CandidateBatch(
+            ids,
+            target,
+            pregrasp,
+            batch.opening[base_indices],
+            batch.contact_width[base_indices],
+            batch.pregrasp_joints[base_indices],
+            batch.close_command[base_indices],
+        )
 
     def coverage(self, batch: CandidateBatch) -> tuple[np.ndarray, np.ndarray]:
         """Grid cells schedule revisits; they never replace actual-pose deduplication.

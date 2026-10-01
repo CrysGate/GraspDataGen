@@ -12,6 +12,7 @@ sampling:
   dedup_translation_m: 0.003
   dedup_rotation_rad: 0.15
   dedup_opening_m: 0.003
+  object_yaw_samples: 1
 posture:
   max_approach_up_dot: 0.0
   min_wrist_up_dot: 0.0
