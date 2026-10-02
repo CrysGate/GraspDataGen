@@ -1,0 +1,28 @@
+parameters: configs/parameters.yaml
+grippers:
+- configs/grippers/franka_panda.yaml
+manifest: configs/objects/bottle_matryoshka.yaml
+cache: outputs/prepared
+output: outputs/franka-panda-matryoshka-gpu1
+device: 1
+environments: 1024
+seed: 20260908
+target_successes: 1024
+candidate_budget: 16384
+time_budget_s: 7200
+objects:
+- matryoshka_00013
+- matryoshka_00014
+- matryoshka_00015
+- matryoshka_00016
+- matryoshka_00017
+- matryoshka_00018
+- matryoshka_00019
+- matryoshka_00020
+- matryoshka_00021
+- matryoshka_00022
+- matryoshka_00023
+- matryoshka_00024
+sampling:
+  rolls_per_contact: 1
+  object_yaw_samples: 32
