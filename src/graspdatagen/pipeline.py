@@ -333,6 +333,21 @@ def generate_pair(
         accepted = passed[unique[unique >= len(successful)] - len(successful)]
         manifest["duplicates"] += len(passed) - len(accepted)
         accepted = accepted[: config.target_successes - len(successful)]
+        batch_number = len(manifest["shards"])
+        if config.sampling_inspection:
+            from graspdatagen.sampling_inspection import write_sampling_inspection_batch
+
+            write_sampling_inspection_batch(
+                directory,
+                pair,
+                batch,
+                result,
+                successful_inputs,
+                accepted,
+                batch_kind,
+                sampler.round_index,
+                batch_number,
+            )
         successful = np.concatenate((successful, result.actual_tcp[accepted, 0]))
         successful_openings = np.concatenate((successful_openings, measured_openings[accepted]))
         if (
@@ -357,7 +372,6 @@ def generate_pair(
 
                 if len(variants):
                     pending_yaw.append(variants)
-        batch_number = len(manifest["shards"])
         shard = write_arrays(
             directory / f"grasps-{batch_number:05d}.npz", result_arrays(result, accepted)
         )

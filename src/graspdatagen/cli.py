@@ -42,13 +42,14 @@ def rendering_errors(text: str) -> list[str]:
     ]
 
 
-def publish_completed_pairs(root: Path) -> None:
+def publish_completed_pairs(root: Path, export: bool) -> None:
     for directory in acknowledge_checkpoints(root):
         manifest_path = directory / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
         manifest["worker_verified"] = True
         durable_json(manifest_path, manifest)
-        export_grasps_yaml(directory)
+        if export:
+            export_grasps_yaml(directory)
 
 
 def worker(args: argparse.Namespace) -> None:
@@ -250,6 +251,10 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     export = commands.add_parser("export", help="Export grasps-<robot>.yaml beside the object USD")
     export.add_argument("--run", type=Path, required=True)
+    sampling_inspect = commands.add_parser(
+        "sampling-inspect", help="Render saved pre-PhysX candidate distributions"
+    )
+    sampling_inspect.add_argument("--run", type=Path, required=True)
     view = commands.add_parser(
         "view", help="Inspect static grasp poses from compact YAML in Isaac Sim"
     )
@@ -338,6 +343,11 @@ def main() -> None:
         return
     if args.command == "export":
         print(export_grasps_yaml(args.run))
+        return
+    if args.command == "sampling-inspect":
+        from graspdatagen.sampling_inspection import inspect_sampling
+
+        print(inspect_sampling(args.run, args.run / "sampling-inspection.png"))
         return
     if args.command == "generate-parallel":
         run_parallel_generate(args.config, parse_devices(args.devices), args.resume)
@@ -442,7 +452,7 @@ def main() -> None:
                     process.wait()
                     break
                 if args.command == "generate" and not partial_line:
-                    publish_completed_pairs(args.output.parent)
+                    publish_completed_pairs(args.output.parent, not config.sampling_inspection)
                 try:
                     process.wait(timeout=1)
                 except subprocess.TimeoutExpired:
@@ -481,7 +491,8 @@ def main() -> None:
             if verified:
                 manifest["worker_verified"] = True
                 durable_json(pair, manifest)
-                export_grasps_yaml(pair.parent)
+                if not config.sampling_inspection:
+                    export_grasps_yaml(pair.parent)
     write_json(args.output, report)
     if args.command == "generate":
         durable_json(args.output.parent / "attempts" / f"worker-{process.pid}.json", report)

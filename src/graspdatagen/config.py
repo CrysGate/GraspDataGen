@@ -408,6 +408,7 @@ class RunConfig:
     target_successes: int
     candidate_budget: int
     time_budget_s: float
+    sampling_inspection: bool
     object_position_m: tuple[float, ...]
     sampling: SamplingConfig
     posture: PostureConfig
@@ -438,7 +439,14 @@ def load_run(path: Path) -> RunConfig:
         "time_budget_s",
         "parameters",
     }
-    optional = {"objects", "grasp_regions", "sampling", "posture", "validation"}
+    optional = {
+        "objects",
+        "grasp_regions",
+        "sampling_inspection",
+        "sampling",
+        "posture",
+        "validation",
+    }
     received = set(data)
     if not required <= received or not received <= required | optional:
         raise ValueError(
@@ -451,6 +459,10 @@ def load_run(path: Path) -> RunConfig:
     for name in ("device", "seed"):
         if type(data[name]) is not int or data[name] < 0:
             raise ValueError(f"{name} must be a nonnegative integer")
+    sampling_inspection = data.get("sampling_inspection", False)
+    if type(sampling_inspection) is not bool:
+        raise ValueError("sampling_inspection must be a boolean")
+    data["sampling_inspection"] = sampling_inspection
     grippers = tuple(Path(p) for p in string_sequence(data["grippers"]))
     parameter_path = Path(data["parameters"])
     parameters = read_mapping(parameter_path)
@@ -493,6 +505,7 @@ def load_run(path: Path) -> RunConfig:
         data["target_successes"],
         data["candidate_budget"],
         positive(data["time_budget_s"]),
+        sampling_inspection,
         vector(data["object_position_m"], 3),
         SamplingConfig(**data["sampling"]),
         PostureConfig(**data["posture"]),
